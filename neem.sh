@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 #
 # NEEM Stack Setup - interactive Linux/macOS server bootstrapper
-# Nginx, Node.js, PM2, MySQL, Micro and Glances
+#
+# THESIS: A calm command centre for assembling a server stack, not a numbered
+# prompt maze. OWN-WORLD: ink-black terminal, cyan structure, green completion,
+# amber caution, crisp rules and native checkbox controls. STORY: see the stack,
+# select any combination, review it, then install or remove with confidence.
+# FIRST VIEWPORT: compact NEEM masthead, platform state, creator credit, then a
+# short action menu. FORM: keyboard-operated terminal workbench with a dedicated
+# creator card and reversible component management.
 
 set -Eeuo pipefail
 
-VERSION="1.0.0"
+VERSION="2.0.0"
 DRY_RUN=0
 OS=""
 PKG=""
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ -t 1 ]]; then
   BOLD=$'\033[1m'; BLUE=$'\033[34m'; GREEN=$'\033[32m'
@@ -22,6 +30,49 @@ ok() { printf '%s✓%s %s\n' "$GREEN" "$RESET" "$*"; }
 warn() { printf '%s!%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
 die() { printf '%s✗%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 pause() { [[ $DRY_RUN -eq 1 ]] || read -r -p "Press Enter to continue..." _; }
+
+rule() {
+  local title=${1:-} width=68 line fill
+  if [[ -n "$title" ]]; then
+    printf -v line -- '-- %s ' "$title"
+    printf -v fill '%*s' "$((width-${#line}))" ''
+    printf '%s%s%s%s\n' "$BLUE" "$line" "${fill// /-}" "$RESET"
+  else
+    printf -v fill '%*s' "$width" ''
+    printf '%s%s%s\n' "$BLUE" "${fill// /-}" "$RESET"
+  fi
+}
+
+show_brand() {
+  printf '\n%s' "$BLUE"
+  printf '  _   _  _____ _____ __  __\n'
+  printf ' | \\ | || ____| ____|  \\/  |\n'
+  printf ' |  \\| ||  _| |  _| | |\\/| |\n'
+  printf ' | |\\  || |___| |___| |  | |\n'
+  printf ' |_| \\_||_____|_____|_|  |_|\n'
+  printf '%s  Stack Setup%s  v%s\n' "$BOLD" "$RESET" "$VERSION"
+  printf '  Built with care by Mohamed Aiman\n'
+  rule
+}
+
+show_creator() {
+  clear 2>/dev/null || true
+  show_brand
+  if [[ -f "$SCRIPT_DIR/ASCI_ART_ME.txt" ]]; then
+    printf '%s' "$BLUE"
+    while IFS= read -r line; do printf '%s\n' "$line"; done < "$SCRIPT_DIR/ASCI_ART_ME.txt"
+    printf '%s' "$RESET"
+  fi
+  rule "CREATOR"
+  printf '  %sMohamed Aiman%s\n' "$BOLD" "$RESET"
+  printf '  Email        %smohamedaiman103@gmail.com%s\n' "$BLUE" "$RESET"
+  printf '  Portfolio    %shttps://darkguyaiman.com%s\n' "$BLUE" "$RESET"
+  printf '  LinkedIn     %sdarkguyaiman%s\n' "$BLUE" "$RESET"
+  printf '  Instagram    %sdarkguyaiman%s\n' "$BLUE" "$RESET"
+  printf '  X / Twitter  %sthedarkguyaiman%s\n\n' "$BLUE" "$RESET"
+  printf '  Support      https://ko-fi.com/darkguyaiman\n'
+  printf '               https://paypal.me/thedarkguyaiman\n'
+}
 
 run() {
   printf '%s+%s ' "$BLUE" "$RESET"
@@ -92,6 +143,17 @@ package_install() {
     pacman) root_run pacman -S --needed --noconfirm "$@" ;;
     zypper) root_run zypper --non-interactive install "$@" ;;
     brew) run brew install "$@" ;;
+  esac
+}
+
+package_remove() {
+  case "$PKG" in
+    apt) root_run apt-get remove -y "$@" ;;
+    dnf) root_run dnf remove -y "$@" ;;
+    yum) root_run yum remove -y "$@" ;;
+    pacman) root_run pacman -R --noconfirm "$@" ;;
+    zypper) root_run zypper --non-interactive remove "$@" ;;
+    brew) run brew uninstall "$@" ;;
   esac
 }
 
@@ -202,6 +264,127 @@ install_all() {
   install_micro
   install_glances
   ok "The NEEM stack is installed."
+}
+
+remove_node() {
+  warn "Removing Node.js may also make global npm tools such as PM2 unavailable."
+  case "$PKG" in
+    brew) package_remove node ;;
+    *) package_remove nodejs npm ;;
+  esac
+}
+
+remove_pm2() {
+  need_command npm
+  if [[ "$OS" == "macos" ]]; then run npm uninstall --global pm2
+  else root_run npm uninstall --global pm2
+  fi
+}
+
+remove_mysql() {
+  warn "The database package will be removed; database files and configuration are intentionally retained."
+  case "$PKG" in
+    brew) run brew services stop mysql || true; package_remove mysql ;;
+    apt) package_remove default-mysql-server ;;
+    dnf|yum) package_remove mysql-server ;;
+    pacman) package_remove mariadb ;;
+    zypper) package_remove mysql-community-server ;;
+  esac
+}
+
+remove_nginx() {
+  if [[ "$OS" == "macos" ]]; then run brew services stop nginx || true; fi
+  package_remove nginx
+}
+
+remove_micro() { package_remove micro; }
+
+remove_glances() {
+  case "$PKG" in
+    brew|pacman) package_remove glances ;;
+    apt) command -v pipx >/dev/null 2>&1 && run pipx uninstall glances || package_remove glances ;;
+    dnf|yum|zypper) run python3 -m pip uninstall --yes glances ;;
+  esac
+}
+
+remove_certbot() {
+  case "$PKG" in
+    apt|dnf|yum|zypper) package_remove certbot python3-certbot-nginx ;;
+    pacman) package_remove certbot certbot-nginx ;;
+    brew) package_remove certbot ;;
+  esac
+}
+
+COMPONENT_NAMES=("Node.js" "PM2 process manager" "MySQL Server" "Nginx" "Micro editor" "Glances monitor" "Certbot SSL")
+COMPONENT_INSTALL=(install_node install_pm2 install_mysql install_nginx install_micro install_glances install_certbot)
+COMPONENT_REMOVE=(remove_node remove_pm2 remove_mysql remove_nginx remove_micro remove_glances remove_certbot)
+SELECTED_COMPONENTS=()
+
+select_components() {
+  local verb=$1 cursor=0 key rest index target=1
+  local -a checked=(0 0 0 0 0 0 0)
+  SELECTED_COMPONENTS=()
+  if [[ ! -t 0 || ! -r /dev/tty ]]; then
+    warn "The checkbox picker needs an interactive terminal."
+    return 1
+  fi
+  while true; do
+    clear 2>/dev/null || true
+    show_brand
+    printf '  %s%s components%s\n' "$BOLD" "$verb" "$RESET"
+    printf '  Up/Down move | Space tick | A all | Enter continue | Esc cancel\n\n'
+    for index in "${!COMPONENT_NAMES[@]}"; do
+      if ((index == cursor)); then printf '%s  >' "$BLUE"; else printf '   '; fi
+      if ((checked[index])); then
+        printf ' [%sx%s] %s%s\n' "$GREEN" "$RESET" "${COMPONENT_NAMES[index]}" "$RESET"
+      else
+        printf ' [ ] %s%s\n' "${COMPONENT_NAMES[index]}" "$RESET"
+      fi
+    done
+
+    IFS= read -rsn1 key < /dev/tty || true
+    if [[ "$key" == $'\e' ]]; then
+      rest=""
+      IFS= read -rsn2 -t 0.1 rest < /dev/tty || true
+      case "$rest" in
+        '[A') cursor=$(((cursor - 1 + ${#COMPONENT_NAMES[@]}) % ${#COMPONENT_NAMES[@]})) ;;
+        '[B') cursor=$(((cursor + 1) % ${#COMPONENT_NAMES[@]})) ;;
+        '') return 1 ;;
+      esac
+    elif [[ "$key" == " " ]]; then
+      checked[cursor]=$((1-checked[cursor]))
+    elif [[ "$key" == "a" || "$key" == "A" ]]; then
+      target=1
+      for index in "${!checked[@]}"; do ((checked[index])) || target=0; done
+      target=$((1-target))
+      for index in "${!checked[@]}"; do checked[index]=$target; done
+    elif [[ -z "$key" ]]; then
+      for index in "${!checked[@]}"; do
+        ((checked[index])) && SELECTED_COMPONENTS+=("$index")
+      done
+      return 0
+    fi
+  done
+}
+
+component_workflow() {
+  local mode=$1 index fn plan_title
+  select_components "$mode" || { info "No components selected."; return; }
+  ((${#SELECTED_COMPONENTS[@]})) || { info "No components selected."; return; }
+  printf '\n'
+  if [[ "$mode" == "Install" ]]; then plan_title="INSTALL PLAN"; else plan_title="REMOVE PLAN"; fi
+  rule "$plan_title"
+  for index in "${SELECTED_COMPONENTS[@]}"; do printf '  * %s\n' "${COMPONENT_NAMES[index]}"; done
+  confirm "$mode these ${#SELECTED_COMPONENTS[@]} component(s)?" || return
+  [[ "$mode" == "Install" ]] && package_refresh
+  for index in "${SELECTED_COMPONENTS[@]}"; do
+    rule "${COMPONENT_NAMES[index]}"
+    if [[ "$mode" == "Install" ]]; then fn=${COMPONENT_INSTALL[index]}
+    else fn=${COMPONENT_REMOVE[index]}
+    fi
+    "$fn"
+  done
+  ok "$mode workflow complete."
 }
 
 valid_domain() {
@@ -401,37 +584,27 @@ health_check() {
   if command -v nginx >/dev/null 2>&1; then root_run nginx -t || true; fi
 }
 
-component_menu() {
-  while true; do
-    printf '\n%sInstall a component%s\n' "$BOLD" "$RESET"
-    printf '  1) Node.js\n  2) PM2\n  3) MySQL\n  4) Nginx\n'
-    printf '  5) Micro editor\n  6) Glances\n  7) Certbot\n  0) Back\n'
-    read -r -p "Choose: " choice
-    case "$choice" in
-      1) install_node ;; 2) install_pm2 ;; 3) install_mysql ;;
-      4) install_nginx ;; 5) install_micro ;; 6) install_glances ;;
-      7) install_certbot ;; 0) return ;; *) warn "Choose a listed option." ;;
-    esac
-  done
-}
-
 main_menu() {
   while true; do
     clear 2>/dev/null || true
-    printf '%sNEEM Stack Setup%s  v%s\n' "$BOLD" "$RESET" "$VERSION"
-    printf 'Platform: %s (%s)%s\n\n' "$OS" "$PKG" "$([[ $DRY_RUN -eq 1 ]] && echo ' · dry run')"
-    printf '  1) Install complete stack\n'
-    printf '  2) Install one component\n'
-    printf '  3) Configure PM2 startup\n'
-    printf '  4) Connect a domain to a PM2 app\n'
-    printf '  5) Enable SSL for an existing domain\n'
-    printf '  6) Health check\n'
-    printf '  0) Exit\n'
-    read -r -p "Choose: " choice
+    show_brand
+    printf '  %s | %s%s\n\n' "$OS" "$PKG" "$([[ $DRY_RUN -eq 1 ]] && echo ' | DRY RUN')"
+    printf '  %s1  Install selected components%s\n' "$BOLD" "$RESET"
+    printf '  %s2  Remove selected components%s\n' "$BOLD" "$RESET"
+    printf '  %s3  Install the complete stack%s\n' "$BOLD" "$RESET"
+    printf '  4  Configure PM2 startup\n'
+    printf '  5  Connect a domain to a PM2 app\n'
+    printf '  6  Enable SSL for an existing domain\n'
+    printf '  7  Run health check\n'
+    printf '  8  Meet the creator + support\n'
+    printf '  0  Exit\n\n'
+    read -r -p "  Select an action: " choice
     case "$choice" in
-      1) install_all; pause ;; 2) component_menu ;;
-      3) pm2_startup; pause ;; 4) configure_domain; pause ;;
-      5) enable_ssl; pause ;; 6) health_check; pause ;;
+      1) component_workflow Install; pause ;;
+      2) component_workflow Remove; pause ;;
+      3) install_all; pause ;; 4) pm2_startup; pause ;;
+      5) configure_domain; pause ;; 6) enable_ssl; pause ;;
+      7) health_check; pause ;; 8) show_creator; pause ;;
       0) printf 'Goodbye.\n'; return ;; *) warn "Choose a listed option."; pause ;;
     esac
   done
@@ -446,6 +619,12 @@ Usage: ./neem.sh [--dry-run] [--health] [--help]
 Without options, launches the interactive terminal menu.
   --dry-run  Print privileged/package commands without running them
   --health   Show installed components and validate Nginx
+
+Interactive picker:
+  Up/Down  Move between components
+  Space    Tick or untick a component
+  A        Tick or untick all
+  Enter    Continue with the selection
 EOF
 }
 

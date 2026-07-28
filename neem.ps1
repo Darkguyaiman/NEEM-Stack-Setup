@@ -1,4 +1,12 @@
-# NEEM Stack Setup - interactive Windows server bootstrapper
+﻿# NEEM Stack Setup - interactive Windows server bootstrapper
+#
+# THESIS: A calm command centre for assembling a server stack, not a numbered
+# prompt maze. OWN-WORLD: ink-black terminal, cyan structure, green completion,
+# amber caution, crisp rules and native checkbox controls. STORY: see the stack,
+# select any combination, review it, then install or remove with confidence.
+# FIRST VIEWPORT: compact NEEM masthead, platform state, creator credit, then a
+# short action menu. FORM: keyboard-operated terminal workbench with a dedicated
+# creator card and reversible component management.
 #Requires -Version 5.1
 
 [CmdletBinding()]
@@ -9,12 +17,58 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:Version = '1.0.0'
+$script:Version = '2.0.0'
 $script:PackageManager = $null
+$script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Write-Info([string]$Message) { Write-Host "[i] $Message" -ForegroundColor Cyan }
 function Write-Ok([string]$Message) { Write-Host "[+] $Message" -ForegroundColor Green }
 function Write-Warn([string]$Message) { Write-Host "[!] $Message" -ForegroundColor Yellow }
+
+function Write-Rule {
+    param([string]$Title = '')
+    $width = [Math]::Min(72, [Math]::Max(44, $Host.UI.RawUI.WindowSize.Width - 2))
+    if ($Title) {
+        $line = "-- $Title "
+        $line += '-' * [Math]::Max(2, $width - $line.Length)
+    } else {
+        $line = '-' * $width
+    }
+    Write-Host $line -ForegroundColor DarkCyan
+}
+
+function Show-Brand {
+    Write-Host ''
+    Write-Host '  ███╗   ██╗███████╗███████╗███╗   ███╗' -ForegroundColor Cyan
+    Write-Host '  ████╗  ██║██╔════╝██╔════╝████╗ ████║' -ForegroundColor Cyan
+    Write-Host '  ██╔██╗ ██║█████╗  █████╗  ██╔████╔██║' -ForegroundColor Cyan
+    Write-Host '  ██║╚██╗██║██╔══╝  ██╔══╝  ██║╚██╔╝██║' -ForegroundColor Cyan
+    Write-Host '  ██║ ╚████║███████╗███████╗██║ ╚═╝ ██║' -ForegroundColor Cyan
+    Write-Host '  ╚═╝  ╚═══╝╚══════╝╚══════╝╚═╝     ╚═╝' -ForegroundColor Cyan
+    Write-Host '  Stack Setup' -ForegroundColor White -NoNewline
+    Write-Host "  v$script:Version" -ForegroundColor DarkGray
+    Write-Host '  Built with care by Mohamed Aiman' -ForegroundColor DarkGray
+    Write-Rule
+}
+
+function Show-CreatorCard {
+    Clear-Host
+    Show-Brand
+    $artPath = Join-Path $script:ProjectRoot 'ASCI_ART_ME.txt'
+    if (Test-Path $artPath) {
+        Get-Content $artPath | ForEach-Object { Write-Host $_ -ForegroundColor DarkCyan }
+    }
+    Write-Rule 'CREATOR'
+    Write-Host '  Mohamed Aiman' -ForegroundColor White
+    Write-Host '  Email       ' -ForegroundColor DarkGray -NoNewline; Write-Host 'mohamedaiman103@gmail.com' -ForegroundColor Cyan
+    Write-Host '  Portfolio   ' -ForegroundColor DarkGray -NoNewline; Write-Host 'https://darkguyaiman.com' -ForegroundColor Cyan
+    Write-Host '  LinkedIn    ' -ForegroundColor DarkGray -NoNewline; Write-Host 'darkguyaiman' -ForegroundColor Cyan
+    Write-Host '  Instagram   ' -ForegroundColor DarkGray -NoNewline; Write-Host 'darkguyaiman' -ForegroundColor Cyan
+    Write-Host '  X / Twitter ' -ForegroundColor DarkGray -NoNewline; Write-Host 'thedarkguyaiman' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host '  Support     ' -ForegroundColor DarkGray -NoNewline; Write-Host 'https://ko-fi.com/darkguyaiman' -ForegroundColor Magenta
+    Write-Host '              ' -NoNewline; Write-Host 'https://paypal.me/thedarkguyaiman' -ForegroundColor Blue
+}
 
 function Invoke-Step {
     param([Parameter(Mandatory)][scriptblock]$Action, [Parameter(Mandatory)][string]$Display)
@@ -87,6 +141,15 @@ function Install-MySQL {
     Install-Package -WingetId 'Oracle.MySQL' -ChocoId 'mysql' -Name 'MySQL'
 }
 
+function Install-MySQLWorkbench {
+    if ((Test-Path "$env:ProgramFiles\MySQL\MySQL Workbench*\MySQLWorkbench.exe") -or
+        (Test-Path "${env:ProgramFiles(x86)}\MySQL\MySQL Workbench*\MySQLWorkbench.exe")) {
+        Write-Ok 'MySQL Workbench is already installed.'
+        return
+    }
+    Install-Package -WingetId 'Oracle.MySQLWorkbench' -ChocoId 'mysql.workbench' -Name 'MySQL Workbench'
+}
+
 function Install-Nginx {
     if (Get-Command nginx -ErrorAction SilentlyContinue) {
         Write-Ok 'Nginx is already installed.'
@@ -142,15 +205,51 @@ function Install-WinAcme {
 }
 
 function Install-All {
-    Write-Info 'This installs Node.js, PM2, MySQL, Nginx, Micro and Glances.'
+    Write-Info 'This installs Node.js, PM2, MySQL, MySQL Workbench, Nginx, Micro and Glances.'
     if (-not (Confirm-Action 'Install the complete NEEM stack?')) { return }
     Install-Node
     Install-PM2
     Install-MySQL
+    Install-MySQLWorkbench
     Install-Nginx
     Install-Micro
     Install-Glances
     Write-Ok 'The NEEM stack is installed.'
+}
+
+function Uninstall-Package {
+    param([string]$WingetId, [string]$ChocoId, [string]$Name)
+    if ($script:PackageManager -eq 'winget') {
+        Invoke-Step { winget uninstall --id $WingetId --exact --accept-source-agreements } "winget uninstall $WingetId"
+    } else {
+        Invoke-Step { choco uninstall $ChocoId -y } "choco uninstall $ChocoId"
+    }
+    Write-Ok "$Name removal finished."
+}
+
+function Remove-Node { Uninstall-Package -WingetId 'OpenJS.NodeJS.LTS' -ChocoId 'nodejs-lts' -Name 'Node.js' }
+function Remove-PM2 { Invoke-Step { npm uninstall --global pm2 } 'npm uninstall --global pm2'; Write-Ok 'PM2 removal finished.' }
+function Remove-MySQL {
+    Write-Warn 'The MySQL package will be removed; existing databases and configuration are intentionally retained.'
+    Uninstall-Package -WingetId 'Oracle.MySQL' -ChocoId 'mysql' -Name 'MySQL'
+}
+function Remove-MySQLWorkbench { Uninstall-Package -WingetId 'Oracle.MySQLWorkbench' -ChocoId 'mysql.workbench' -Name 'MySQL Workbench' }
+function Remove-Nginx { Uninstall-Package -WingetId 'nginxinc.nginx' -ChocoId 'nginx' -Name 'Nginx' }
+function Remove-Micro { Uninstall-Package -WingetId 'zyedidia.micro' -ChocoId 'micro' -Name 'Micro' }
+function Remove-Glances {
+    $python = if (Get-Command py -ErrorAction SilentlyContinue) { 'py' } else { 'python' }
+    Invoke-Step { & $python -m pip uninstall --yes glances } "$python -m pip uninstall --yes glances"
+    Write-Ok 'Glances removal finished.'
+}
+function Remove-WinAcme {
+    if ($script:PackageManager -eq 'choco') {
+        Uninstall-Package -WingetId '' -ChocoId 'win-acme' -Name 'win-acme'
+        return
+    }
+    $destination = Join-Path $env:ProgramData 'NEEM\win-acme'
+    if (-not (Test-Path $destination)) { Write-Warn 'The NEEM-managed win-acme folder was not found.'; return }
+    Invoke-Step { Remove-Item -LiteralPath $destination -Recurse -Force } "remove $destination"
+    Write-Ok 'win-acme removal finished. Existing certificates were left in the Nginx folder.'
 }
 
 function Test-Domain([string]$Domain) {
@@ -449,6 +548,10 @@ function Show-Health {
         if ($command) { Write-Host ("  + {0,-12} {1}" -f $item.Key, $command.Source) -ForegroundColor Green }
         else { Write-Host ("  - {0,-12} not installed" -f $item.Key) -ForegroundColor Yellow }
     }
+    $workbench = (Test-Path "$env:ProgramFiles\MySQL\MySQL Workbench*\MySQLWorkbench.exe") -or
+        (Test-Path "${env:ProgramFiles(x86)}\MySQL\MySQL Workbench*\MySQLWorkbench.exe")
+    if ($workbench) { Write-Host '  + MySQL Workbench installed' -ForegroundColor Green }
+    else { Write-Host '  - MySQL Workbench not installed' -ForegroundColor Yellow }
     if (Get-Command pm2 -ErrorAction SilentlyContinue) { & pm2 ls }
     try {
         $root = Get-NginxRoot
@@ -459,36 +562,103 @@ function Show-Health {
     }
 }
 
-function Show-ComponentMenu {
+function Get-ComponentCatalog {
+    return @(
+        [pscustomobject]@{ Name='Node.js'; Probe='node'; Install='Install-Node'; Remove='Remove-Node' }
+        [pscustomobject]@{ Name='PM2 process manager'; Probe='pm2'; Install='Install-PM2'; Remove='Remove-PM2' }
+        [pscustomobject]@{ Name='MySQL Server'; Probe='mysql'; Install='Install-MySQL'; Remove='Remove-MySQL' }
+        [pscustomobject]@{ Name='MySQL Workbench'; Probe='workbench'; Install='Install-MySQLWorkbench'; Remove='Remove-MySQLWorkbench' }
+        [pscustomobject]@{ Name='Nginx'; Probe='nginx'; Install='Install-Nginx'; Remove='Remove-Nginx' }
+        [pscustomobject]@{ Name='Micro editor'; Probe='micro'; Install='Install-Micro'; Remove='Remove-Micro' }
+        [pscustomobject]@{ Name='Glances monitor'; Probe='glances'; Install='Install-Glances'; Remove='Remove-Glances' }
+        [pscustomobject]@{ Name='win-acme SSL'; Probe='wacs'; Install='Install-WinAcme'; Remove='Remove-WinAcme' }
+    )
+}
+
+function Select-Components {
+    param([Parameter(Mandatory)][string]$Verb)
+    $items = @(Get-ComponentCatalog)
+    $selected = [bool[]]::new($items.Count)
+    $cursor = 0
     while ($true) {
-        Write-Host "`nInstall a component" -ForegroundColor White
-        Write-Host "  1) Node.js`n  2) PM2`n  3) MySQL`n  4) Nginx"
-        Write-Host "  5) Micro editor`n  6) Glances`n  7) win-acme`n  0) Back"
-        switch (Read-Host 'Choose') {
-            '1' { Install-Node } '2' { Install-PM2 } '3' { Install-MySQL }
-            '4' { Install-Nginx } '5' { Install-Micro } '6' { Install-Glances }
-            '7' { Install-WinAcme } '0' { return }
-            default { Write-Warn 'Choose a listed option.' }
+        Clear-Host
+        Show-Brand
+        Write-Host "  $Verb components" -ForegroundColor White
+        Write-Host '  Up/Down move  |  Space tick  |  A all  |  Enter continue  |  Esc cancel' -ForegroundColor DarkGray
+        Write-Host ''
+        for ($index = 0; $index -lt $items.Count; $index++) {
+            $pointer = if ($index -eq $cursor) { '>' } else { ' ' }
+            $mark = if ($selected[$index]) { 'x' } else { ' ' }
+            $color = if ($index -eq $cursor) { 'Cyan' } elseif ($selected[$index]) { 'Green' } else { 'Gray' }
+            $probe = $items[$index].Probe
+            $installed = if ($probe -eq 'workbench') {
+                (Test-Path "$env:ProgramFiles\MySQL\MySQL Workbench*\MySQLWorkbench.exe") -or
+                    (Test-Path "${env:ProgramFiles(x86)}\MySQL\MySQL Workbench*\MySQLWorkbench.exe")
+            } else {
+                [bool](Get-Command $probe -ErrorAction SilentlyContinue)
+            }
+            $state = if ($installed) { '  installed' } else { '' }
+            Write-Host ("  {0} [{1}] {2}{3}" -f $pointer, $mark, $items[$index].Name, $state) -ForegroundColor $color
+        }
+        $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+        switch ($key.VirtualKeyCode) {
+            38 { $cursor = ($cursor - 1 + $items.Count) % $items.Count }
+            40 { $cursor = ($cursor + 1) % $items.Count }
+            32 { $selected[$cursor] = -not $selected[$cursor] }
+            65 {
+                $target = $selected -contains $false
+                for ($index = 0; $index -lt $selected.Count; $index++) { $selected[$index] = $target }
+            }
+            13 {
+                $result = for ($index = 0; $index -lt $items.Count; $index++) {
+                    if ($selected[$index]) { $items[$index] }
+                }
+                return @($result)
+            }
+            27 { return @() }
         }
     }
+}
+
+function Invoke-ComponentWorkflow {
+    param([ValidateSet('Install','Remove')][string]$Mode)
+    $items = @(Select-Components -Verb $Mode)
+    if (-not $items.Count) { Write-Info 'No components selected.'; return }
+    Write-Host ''
+    Write-Rule "$($Mode.ToUpper()) PLAN"
+    $items | ForEach-Object { Write-Host "  * $($_.Name)" -ForegroundColor White }
+    if (-not (Confirm-Action "$Mode these $($items.Count) component(s)?")) { return }
+    foreach ($item in $items) {
+        Write-Rule $item.Name
+        $command = $item.$Mode
+        & $command
+    }
+    Write-Ok "$Mode workflow complete."
 }
 
 function Show-MainMenu {
     while ($true) {
         Clear-Host
-        Write-Host "NEEM Stack Setup  v$script:Version" -ForegroundColor Cyan
-        Write-Host "Windows · $script:PackageManager$(if ($DryRun) {' · dry run'})`n"
-        Write-Host "  1) Install complete stack"
-        Write-Host "  2) Install one component"
-        Write-Host "  3) Configure PM2 startup"
-        Write-Host "  4) Connect a domain to a PM2 app"
-        Write-Host "  5) Enable SSL for an existing domain"
-        Write-Host "  6) Health check"
-        Write-Host "  0) Exit"
+        Show-Brand
+        Write-Host "  Windows  |  $script:PackageManager$(if ($DryRun) {'  |  DRY RUN'})" -ForegroundColor DarkGray
+        Write-Host ''
+        Write-Host '  1  Install selected components' -ForegroundColor White
+        Write-Host '  2  Remove selected components' -ForegroundColor White
+        Write-Host '  3  Install the complete stack' -ForegroundColor White
+        Write-Host '  4  Configure PM2 startup'
+        Write-Host '  5  Connect a domain to a PM2 app'
+        Write-Host '  6  Enable SSL for an existing domain'
+        Write-Host '  7  Run health check'
+        Write-Host '  8  Meet the creator + support'
+        Write-Host '  0  Exit' -ForegroundColor DarkGray
+        Write-Host ''
         try {
-            switch (Read-Host 'Choose') {
-                '1' { Install-All } '2' { Show-ComponentMenu } '3' { Set-PM2Startup }
-                '4' { Connect-Domain } '5' { Enable-Ssl } '6' { Show-Health }
+            switch (Read-Host '  Select an action') {
+                '1' { Invoke-ComponentWorkflow -Mode Install }
+                '2' { Invoke-ComponentWorkflow -Mode Remove }
+                '3' { Install-All } '4' { Set-PM2Startup }
+                '5' { Connect-Domain } '6' { Enable-Ssl } '7' { Show-Health }
+                '8' { Show-CreatorCard }
                 '0' { Write-Host 'Goodbye.'; return }
                 default { Write-Warn 'Choose a listed option.' }
             }
@@ -508,12 +678,25 @@ Usage: .\neem.ps1 [-DryRun] [-Health] [-Help]
 Without options, launches the interactive terminal menu.
   -DryRun  Print package and service commands without running them
   -Health  Show installed components and validate Nginx
+
+Interactive picker:
+  Up/Down  Move between components
+  Space    Tick or untick a component
+  A        Tick or untick all
+  Enter    Continue with the selection
 "@
 }
 
 if ($Help) { Show-Usage; exit 0 }
 if (-not (Test-Administrator)) {
-    Write-Warn 'Run PowerShell as Administrator for installation, Nginx, and SSL tasks.'
+    if (-not $DryRun -and -not $Health) {
+        Write-Info 'Requesting administrator access...'
+        $scriptPath = $MyInvocation.MyCommand.Path
+        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments
+        exit 0
+    }
+    Write-Warn 'Administrator access is required for installation, Nginx, and SSL tasks.'
 }
 if ($Health) {
     Show-Health

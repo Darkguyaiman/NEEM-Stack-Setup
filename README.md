@@ -1,5 +1,7 @@
 # NEEM Stack Setup
 
+Built and maintained by [Mohamed Aiman](https://darkguyaiman.com).
+
 An interactive terminal setup assistant for a Node.js server stack:
 
 - **N**ginx reverse proxy
@@ -8,36 +10,82 @@ An interactive terminal setup assistant for a Node.js server stack:
 - Micro terminal editor
 - Glances system monitor
 - Guided domain and HTTPS setup
+- MySQL Workbench on Windows
 
 It supports Linux, macOS, and Windows with native scripts—there is no runtime to
 install before launching it.
 
+## Interactive component picker
+
+Choose **Install selected components** or **Remove selected components**, then
+build a batch with the keyboard:
+
+- **Up / Down** moves through the component list.
+- **Space** ticks or unticks the focused component.
+- **A** toggles every component.
+- **Enter** reviews and confirms the batch.
+- **Escape** cancels without making changes.
+
+For example, you can tick MySQL, PM2, and Nginx and install all three in one
+run. Removal uses the same picker and always asks for confirmation. Database
+removal never deliberately deletes existing database files or configuration;
+review your package manager's behavior and keep a backup before uninstalling.
+
 ## Quick start
+
+### Windows — double-click
+
+Double-click `Start-NEEM.cmd`. NEEM automatically asks for administrator access
+when it is needed.
+
+To make `neem-stack` available in every new terminal, run this once:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Install-NEEM-Command.ps1
+```
+
+Open a new PowerShell or Command Prompt window, then start NEEM from anywhere:
+
+```powershell
+neem-stack
+```
 
 ### Linux
 
 ```bash
-chmod +x neem.sh
-./neem.sh
+chmod +x install-neem-command.sh
+./install-neem-command.sh
 ```
 
-Run it as your normal deployment user. NEEM asks for `sudo` only when a system
-change needs root access. Supported package managers are `apt`, `dnf`, `yum`,
-`pacman`, and `zypper`.
+Open a new terminal, then start NEEM from anywhere:
+
+```bash
+neem-stack
+```
+
+The command installer writes only to your user folders and does not need root.
+NEEM itself asks for `sudo` only when a system change needs root access.
+Supported package managers are `apt`, `dnf`, `yum`, `pacman`, and `zypper`.
 
 ### macOS
 
-Install [Homebrew](https://brew.sh), then:
+Install [Homebrew](https://brew.sh), then install the command:
 
 ```bash
-chmod +x neem.sh
-./neem.sh
+chmod +x install-neem-command.sh
+./install-neem-command.sh
+```
+
+Open a new terminal and run:
+
+```bash
+neem-stack
 ```
 
 For a public domain, NEEM switches Nginx from the user-level Homebrew service
 to a privileged process so it can bind to ports 80 and 443.
 
-### Windows
+### Windows — run the script directly
 
 Open PowerShell as Administrator:
 
@@ -48,7 +96,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Windows needs either `winget` or Chocolatey. Nginx on Windows is suitable for
 development and light workloads; for a production Internet server, Linux is the
-recommended deployment target.
+recommended deployment target. MySQL Workbench is available as its own checkbox
+and is included in the complete Windows stack.
 
 ## Guided deployment
 
@@ -120,6 +169,27 @@ sudo certbot renew --dry-run
 
 On Windows, reopen PowerShell after installing a component if its executable is
 not yet on `PATH`.
+
+## Creator
+
+- **Email:** [mohamedaiman103@gmail.com](mailto:mohamedaiman103@gmail.com)
+- **Portfolio:** [darkguyaiman.com](https://darkguyaiman.com)
+- **LinkedIn:** [darkguyaiman](https://www.linkedin.com/in/darkguyaiman)
+- **Instagram:** [darkguyaiman](https://www.instagram.com/darkguyaiman)
+- **X (Twitter):** [thedarkguyaiman](https://x.com/thedarkguyaiman)
+
+The interactive terminal also includes a creator screen with the supplied ASCII
+portrait and these contact details.
+
+## Support the project
+
+<a href="https://ko-fi.com/darkguyaiman" target="_blank">
+  <img src="https://img.shields.io/badge/Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Ko-fi" />
+</a>
+&nbsp;&nbsp;
+<a href="https://paypal.me/thedarkguyaiman" target="_blank">
+  <img src="https://img.shields.io/badge/Donate%20via%20PayPal-003087?style=for-the-badge&logo=paypal&logoColor=white" alt="PayPal" />
+</a>
 
 ## Project validation
 
