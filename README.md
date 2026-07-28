@@ -1,5 +1,7 @@
 # NEEM Stack Setup
 
+![NEEM Stack Setup banner](neem-stack-banner.png)
+
 Built and maintained by [Mohamed Aiman](https://darkguyaiman.com).
 
 An interactive terminal setup assistant for a Node.js server stack:
