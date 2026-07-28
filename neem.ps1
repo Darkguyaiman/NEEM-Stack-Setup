@@ -1,8 +1,8 @@
 ﻿# NEEM Stack Setup - interactive Windows server bootstrapper
 #
 # THESIS: A calm command centre for assembling a server stack, not a numbered
-# prompt maze. OWN-WORLD: ink-black terminal, cyan structure, green completion,
-# amber caution, crisp rules and native checkbox controls. STORY: see the stack,
+# prompt maze. OWN-WORLD: NEEM red, charcoal surfaces, cream-white type, cool
+# gray hierarchy, crisp rules and native checkbox controls. STORY: see the stack,
 # select any combination, review it, then install or remove with confidence.
 # FIRST VIEWPORT: compact NEEM masthead, platform state, creator credit, then a
 # short action menu. FORM: keyboard-operated terminal workbench with a dedicated
@@ -13,17 +13,90 @@
 param(
     [switch]$DryRun,
     [switch]$Health,
-    [switch]$Help
+    [switch]$Help,
+    [switch]$NoElevate
 )
 
 $ErrorActionPreference = 'Stop'
-$script:Version = '2.0.0'
-$script:PackageManager = $null
 $script:ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$versionPath = Join-Path $script:ProjectRoot 'VERSION'
+if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
+    throw "Version file not found: $versionPath"
+}
+$script:Version = (Get-Content -LiteralPath $versionPath -Raw).Trim()
+if ($script:Version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+    throw "Invalid version in ${versionPath}: $script:Version"
+}
+$script:PackageManager = $null
+$script:Theme = @{
+    Accent = '197;29;52'       # #c51d34
+    DarkSurface = '46;46;48'   # #2e2e30
+    Muted = '128;128;128'      # #808080
+    Subtle = '90;90;90'        # #5a5a5a
+    Paper = '245;245;245'      # #f5f5f5
+    Cream = '253;251;247'      # #fdfbf7
+}
+$vtProperty = $Host.UI.PSObject.Properties['SupportsVirtualTerminal']
+$script:SupportsTrueColor = [bool](-not [Console]::IsOutputRedirected -and
+    ($env:WT_SESSION -or $env:TERM_PROGRAM -or $env:COLORTERM -eq 'truecolor' -or
+    ($vtProperty -and $Host.UI.SupportsVirtualTerminal)))
+$script:SupportsHyperlinks = [bool](-not [Console]::IsOutputRedirected -and
+    ($env:WT_SESSION -or $env:TERM_PROGRAM))
 
-function Write-Info([string]$Message) { Write-Host "[i] $Message" -ForegroundColor Cyan }
-function Write-Ok([string]$Message) { Write-Host "[+] $Message" -ForegroundColor Green }
-function Write-Warn([string]$Message) { Write-Host "[!] $Message" -ForegroundColor Yellow }
+function Write-Theme {
+    param(
+        [AllowEmptyString()][string]$Text,
+        [ValidateSet('Accent','Primary','Secondary','Muted','Subtle','Selected')][string]$Role = 'Primary',
+        [switch]$NoNewline
+    )
+    if ($script:SupportsTrueColor) {
+        $escape = [char]27
+        $code = switch ($Role) {
+            'Accent' { "38;2;$($script:Theme.Accent)" }
+            'Primary' { "38;2;$($script:Theme.Cream)" }
+            'Secondary' { "38;2;$($script:Theme.Paper)" }
+            'Muted' { "38;2;$($script:Theme.Muted)" }
+            'Subtle' { "38;2;$($script:Theme.Subtle)" }
+            'Selected' { "38;2;$($script:Theme.Cream);48;2;$($script:Theme.DarkSurface)" }
+        }
+        Write-Host ($escape + '[' + $code + 'm' + $Text + $escape + '[0m') -NoNewline:$NoNewline
+        return
+    }
+    $foreground = switch ($Role) {
+        'Accent' { 'Red' }
+        'Primary' { 'White' }
+        'Secondary' { 'Gray' }
+        'Muted' { 'DarkGray' }
+        'Subtle' { 'DarkGray' }
+        'Selected' { 'White' }
+    }
+    if ($Role -eq 'Selected') {
+        Write-Host $Text -ForegroundColor $foreground -BackgroundColor DarkGray -NoNewline:$NoNewline
+    } else {
+        Write-Host $Text -ForegroundColor $foreground -NoNewline:$NoNewline
+    }
+}
+
+function Write-Info([string]$Message) { Write-Theme -Text "[i] $Message" -Role Muted }
+function Write-Ok([string]$Message) { Write-Theme -Text "[+] $Message" -Role Secondary }
+function Write-Warn([string]$Message) { Write-Theme -Text "[!] $Message" -Role Accent }
+
+function Write-Hyperlink {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$Url,
+        [string]$Prefix = '  '
+    )
+    $supportsLinks = $script:SupportsHyperlinks
+    if ($supportsLinks) {
+        $escape = [char]27
+        $link = $escape + ']8;;' + $Url + $escape + '\' + $Label + $escape + ']8;;' + $escape + '\'
+        Write-Theme -Text $Prefix -Role Muted -NoNewline
+        Write-Theme -Text $link -Role Secondary
+    } else {
+        Write-Theme -Text "$Prefix$Label" -Role Secondary
+    }
+}
 
 function Write-Rule {
     param([string]$Title = '')
@@ -34,45 +107,116 @@ function Write-Rule {
     } else {
         $line = '-' * $width
     }
-    Write-Host $line -ForegroundColor DarkCyan
+    Write-Theme -Text $line -Role Subtle
 }
 
 function Show-Brand {
     Write-Host ''
-    Write-Host '  ███╗   ██╗███████╗███████╗███╗   ███╗' -ForegroundColor Cyan
-    Write-Host '  ████╗  ██║██╔════╝██╔════╝████╗ ████║' -ForegroundColor Cyan
-    Write-Host '  ██╔██╗ ██║█████╗  █████╗  ██╔████╔██║' -ForegroundColor Cyan
-    Write-Host '  ██║╚██╗██║██╔══╝  ██╔══╝  ██║╚██╔╝██║' -ForegroundColor Cyan
-    Write-Host '  ██║ ╚████║███████╗███████╗██║ ╚═╝ ██║' -ForegroundColor Cyan
-    Write-Host '  ╚═╝  ╚═══╝╚══════╝╚══════╝╚═╝     ╚═╝' -ForegroundColor Cyan
-    Write-Host '  Stack Setup' -ForegroundColor White -NoNewline
-    Write-Host "  v$script:Version" -ForegroundColor DarkGray
-    Write-Host '  Built with care by Mohamed Aiman' -ForegroundColor DarkGray
+    Write-Theme -Text '  ███╗   ██╗███████╗███████╗███╗   ███╗' -Role Accent
+    Write-Theme -Text '  ████╗  ██║██╔════╝██╔════╝████╗ ████║' -Role Accent
+    Write-Theme -Text '  ██╔██╗ ██║█████╗  █████╗  ██╔████╔██║' -Role Accent
+    Write-Theme -Text '  ██║╚██╗██║██╔══╝  ██╔══╝  ██║╚██╔╝██║' -Role Accent
+    Write-Theme -Text '  ██║ ╚████║███████╗███████╗██║ ╚═╝ ██║' -Role Accent
+    Write-Theme -Text '  ╚═╝  ╚═══╝╚══════╝╚══════╝╚═╝     ╚═╝' -Role Accent
+    Write-Theme -Text '  Stack Setup' -Role Primary -NoNewline
+    Write-Theme -Text "  v$script:Version" -Role Muted
+    Write-Theme -Text '  Built with care by Mohamed Aiman' -Role Muted
     Write-Rule
 }
 
 function Show-CreatorCard {
-    Clear-Host
-    Show-Brand
     $artPath = Join-Path $script:ProjectRoot 'ASCI_ART_ME.txt'
-    if (Test-Path $artPath) {
-        Get-Content $artPath | ForEach-Object { Write-Host $_ -ForegroundColor DarkCyan }
+    $art = if (Test-Path $artPath) { @(Get-Content $artPath) } else { @('  ASCII portrait not found.') }
+    $compactArt = for ($row = 0; $row -lt $art.Count; $row++) {
+        if ((($row + 1) % 6) -eq 0) { continue }
+        $line = $art[$row]
+        if (-not $line.Length) { ''; continue }
+        $characters = for ($column = 0; $column -lt $line.Length; $column++) {
+            if ((($column + 1) % 8) -ne 0) { $line[$column] }
+        }
+        (-join $characters) -replace '^ {0,12}', ''
     }
-    Write-Rule 'CREATOR'
-    Write-Host '  Mohamed Aiman' -ForegroundColor White
-    Write-Host '  Email       ' -ForegroundColor DarkGray -NoNewline; Write-Host 'mohamedaiman103@gmail.com' -ForegroundColor Cyan
-    Write-Host '  Portfolio   ' -ForegroundColor DarkGray -NoNewline; Write-Host 'https://darkguyaiman.com' -ForegroundColor Cyan
-    Write-Host '  LinkedIn    ' -ForegroundColor DarkGray -NoNewline; Write-Host 'darkguyaiman' -ForegroundColor Cyan
-    Write-Host '  Instagram   ' -ForegroundColor DarkGray -NoNewline; Write-Host 'darkguyaiman' -ForegroundColor Cyan
-    Write-Host '  X / Twitter ' -ForegroundColor DarkGray -NoNewline; Write-Host 'thedarkguyaiman' -ForegroundColor Cyan
-    Write-Host ''
-    Write-Host '  Support     ' -ForegroundColor DarkGray -NoNewline; Write-Host 'https://ko-fi.com/darkguyaiman' -ForegroundColor Magenta
-    Write-Host '              ' -NoNewline; Write-Host 'https://paypal.me/thedarkguyaiman' -ForegroundColor Blue
+    $art = @($compactArt)
+    $links = @(
+        [pscustomobject]@{ Key='1'; Label='Email'; Text='mohamedaiman103@gmail.com'; Url='mailto:mohamedaiman103@gmail.com' }
+        [pscustomobject]@{ Key='2'; Label='Portfolio'; Text='darkguyaiman.com'; Url='https://darkguyaiman.com' }
+        [pscustomobject]@{ Key='3'; Label='LinkedIn'; Text='linkedin.com/in/darkguyaiman'; Url='https://www.linkedin.com/in/darkguyaiman' }
+        [pscustomobject]@{ Key='4'; Label='Instagram'; Text='instagram.com/darkguyaiman'; Url='https://www.instagram.com/darkguyaiman' }
+        [pscustomobject]@{ Key='5'; Label='X / Twitter'; Text='x.com/thedarkguyaiman'; Url='https://x.com/thedarkguyaiman' }
+        [pscustomobject]@{ Key='6'; Label='Ko-fi'; Text='ko-fi.com/darkguyaiman'; Url='https://ko-fi.com/darkguyaiman' }
+        [pscustomobject]@{ Key='7'; Label='PayPal'; Text='paypal.me/thedarkguyaiman'; Url='https://paypal.me/thedarkguyaiman' }
+    )
+    $artWidth = (($art | ForEach-Object Length | Measure-Object -Maximum).Maximum) + 3
+    $panelWidth = 54
+    $linkHelp = if ($script:SupportsHyperlinks) {
+        'Ctrl+click a link, or press 1-7 to open.'
+    } else {
+        'Press 1-7 to open a link.'
+    }
+
+    $renderCreator = {
+        param([int]$Width)
+        Clear-Host
+        $sideBySide = $Width -ge ($artWidth + $panelWidth)
+        if ($sideBySide) {
+            $panelRows = @{}
+            $panelRows[5] = [pscustomobject]@{ Type='heading'; Text='MOHAMED AIMAN' }
+            $panelRows[6] = [pscustomobject]@{ Type='copy'; Text='Creator of NEEM Stack Setup' }
+            for ($index = 0; $index -lt $links.Count; $index++) {
+                $panelRows[9 + ($index * 2)] = [pscustomobject]@{ Type='link'; Link=$links[$index] }
+            }
+            $panelRows[25] = [pscustomobject]@{ Type='copy'; Text=$linkHelp }
+            $rowCount = [Math]::Max($art.Count, 27)
+            for ($row = 0; $row -lt $rowCount; $row++) {
+                $left = if ($row -lt $art.Count) { $art[$row].TrimEnd() } else { '' }
+                Write-Theme -Text ($left.PadRight($artWidth)) -Role Subtle -NoNewline
+                $panel = $panelRows[$row]
+                if (-not $panel) { Write-Host ''; continue }
+                switch ($panel.Type) {
+                    'heading' { Write-Theme -Text $panel.Text -Role Accent }
+                    'copy' { Write-Theme -Text $panel.Text -Role Muted }
+                    'link' {
+                        $item = $panel.Link
+                        Write-Hyperlink -Prefix ("[{0}] {1,-11} " -f $item.Key, $item.Label) -Label $item.Text -Url $item.Url
+                    }
+                }
+            }
+        } else {
+            $art | ForEach-Object { Write-Theme -Text $_ -Role Subtle }
+            Write-Rule 'CREATOR'
+            Write-Theme -Text '  Mohamed Aiman  |  Creator of NEEM Stack Setup' -Role Primary
+            foreach ($item in $links) {
+                Write-Hyperlink -Prefix ("  [{0}] {1,-11} " -f $item.Key, $item.Label) -Label $item.Text -Url $item.Url
+            }
+        }
+        Write-Host ''
+        Write-Theme -Text '  Press 1-7 to open a link  |  Enter or Esc to return  |  Resize to reflow' -Role Muted
+    }
+
+    $lastWidth = -1
+    while ($true) {
+        try { $currentWidth = $Host.UI.RawUI.WindowSize.Width } catch { $currentWidth = 120 }
+        if ($currentWidth -ne $lastWidth) {
+            & $renderCreator $currentWidth
+            $lastWidth = $currentWidth
+        }
+        try { $keyAvailable = [Console]::KeyAvailable } catch { $keyAvailable = $false }
+        if (-not $keyAvailable) {
+            Start-Sleep -Milliseconds 100
+            continue
+        }
+        $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+        if ($key.VirtualKeyCode -in 13,27) { return }
+        if ($key.Character -match '^[1-7]$') {
+            $item = $links[[int]::Parse([string]$key.Character) - 1]
+            Start-Process $item.Url
+        }
+    }
 }
 
 function Invoke-Step {
     param([Parameter(Mandatory)][scriptblock]$Action, [Parameter(Mandatory)][string]$Display)
-    Write-Host "> $Display" -ForegroundColor DarkCyan
+    Write-Theme -Text "> $Display" -Role Accent
     if (-not $DryRun) {
         $global:LASTEXITCODE = 0
         & $Action
@@ -205,15 +349,20 @@ function Install-WinAcme {
 }
 
 function Install-All {
-    Write-Info 'This installs Node.js, PM2, MySQL, MySQL Workbench, Nginx, Micro and Glances.'
-    if (-not (Confirm-Action 'Install the complete NEEM stack?')) { return }
-    Install-Node
-    Install-PM2
-    Install-MySQL
-    Install-MySQLWorkbench
-    Install-Nginx
-    Install-Micro
-    Install-Glances
+    $needed = @(Get-ComponentCatalog | Where-Object { $_.Complete -and -not (Test-ComponentInstalled $_) })
+    if (-not $needed.Count) {
+        Write-Ok 'The complete NEEM stack is already installed. Nothing to do.'
+        return
+    }
+    Write-Rule 'COMPLETE STACK PLAN'
+    $needed | ForEach-Object { Write-Theme -Text "  + $($_.Name)" -Role Primary }
+    Write-Theme -Text "  $($needed.Count) missing component(s) will be installed; existing tools are skipped." -Role Muted
+    if (-not (Confirm-Action 'Install the missing components?')) { return }
+    foreach ($item in $needed) {
+        Write-Rule $item.Name
+        $command = $item.Install
+        & $command
+    }
     Write-Ok 'The NEEM stack is installed.'
 }
 
@@ -538,68 +687,140 @@ function Set-PM2Startup {
 }
 
 function Show-Health {
-    Write-Host "`nNEEM stack status" -ForegroundColor White
-    $items = [ordered]@{
-        'Node.js'='node'; 'npm'='npm'; 'PM2'='pm2'; 'MySQL'='mysql'
-        'Nginx'='nginx'; 'Micro'='micro'; 'Glances'='glances'; 'win-acme'='wacs'
+    Clear-Host
+    Show-Brand
+    $checks = @(
+        [pscustomobject]@{ Name='Node.js'; Probe='node' }
+        [pscustomobject]@{ Name='npm'; Probe='npm' }
+        [pscustomobject]@{ Name='PM2'; Probe='pm2' }
+        [pscustomobject]@{ Name='MySQL'; Probe='mysql' }
+        [pscustomobject]@{ Name='MySQL Workbench'; Probe='workbench' }
+        [pscustomobject]@{ Name='Nginx'; Probe='nginx' }
+        [pscustomobject]@{ Name='Micro'; Probe='micro' }
+        [pscustomobject]@{ Name='Glances'; Probe='glances' }
+        [pscustomobject]@{ Name='win-acme'; Probe='wacs' }
+    )
+    $rows = foreach ($item in $checks) {
+        $path = Get-ComponentPath $item
+        [pscustomobject]@{ Name=$item.Name; Installed=[bool]$path; Path=$path }
     }
-    foreach ($item in $items.GetEnumerator()) {
-        $command = Get-Command $item.Value -ErrorAction SilentlyContinue
-        if ($command) { Write-Host ("  + {0,-12} {1}" -f $item.Key, $command.Source) -ForegroundColor Green }
-        else { Write-Host ("  - {0,-12} not installed" -f $item.Key) -ForegroundColor Yellow }
+    $ready = @($rows | Where-Object Installed).Count
+    Write-Rule 'STACK HEALTH'
+    Write-Theme -Text ("  {0} of {1} components ready" -f $ready, $rows.Count) -Role Primary
+    Write-Theme -Text ("  {0,-10} {1,-19} {2}" -f 'STATE', 'COMPONENT', 'LOCATION') -Role Selected
+    foreach ($row in $rows) {
+        if ($row.Installed) {
+            $maxPath = [Math]::Max(24, $Host.UI.RawUI.WindowSize.Width - 38)
+            $path = [string]$row.Path
+            if ($path.Length -gt $maxPath) { $path = '...' + $path.Substring($path.Length - ($maxPath - 3)) }
+            Write-Theme -Text ("  {0,-10} {1,-19} {2}" -f 'READY', $row.Name, $path) -Role Secondary
+        } else {
+            Write-Theme -Text ("  {0,-10} {1,-19} {2}" -f 'MISSING', $row.Name, 'not installed') -Role Muted
+        }
     }
-    $workbench = (Test-Path "$env:ProgramFiles\MySQL\MySQL Workbench*\MySQLWorkbench.exe") -or
-        (Test-Path "${env:ProgramFiles(x86)}\MySQL\MySQL Workbench*\MySQLWorkbench.exe")
-    if ($workbench) { Write-Host '  + MySQL Workbench installed' -ForegroundColor Green }
-    else { Write-Host '  - MySQL Workbench not installed' -ForegroundColor Yellow }
-    if (Get-Command pm2 -ErrorAction SilentlyContinue) { & pm2 ls }
-    try {
-        $root = Get-NginxRoot
-        $nginxExe = Get-NginxExe $root
-        & $nginxExe -t -p "$root\"
-    } catch {
-        if (Get-Command nginx -ErrorAction SilentlyContinue) { Write-Warn $_.Exception.Message }
+
+    if (Get-Command pm2 -ErrorAction SilentlyContinue) {
+        Write-Host ''
+        Write-Rule 'PM2 APPLICATIONS'
+        try {
+            $apps = @(& pm2 jlist 2>$null | Out-String | ConvertFrom-Json)
+            if (-not $apps.Count) {
+                Write-Theme -Text '  No PM2 applications are running.' -Role Muted
+            } else {
+                Write-Theme -Text ("  {0,-4} {1,-22} {2,-10} {3,7} {4,10}" -f 'ID','NAME','STATUS','CPU','MEMORY') -Role Selected
+                foreach ($app in $apps) {
+                    $memory = '{0:N1} MB' -f ([double]$app.monit.memory / 1MB)
+                    Write-Theme -Text ("  {0,-4} {1,-22} {2,-10} {3,6}% {4,10}" -f
+                        $app.pm_id, $app.name, $app.pm2_env.status, $app.monit.cpu, $memory) -Role Secondary
+                }
+            }
+        } catch {
+            Write-Theme -Text '  Process list unavailable in this Windows session.' -Role Muted
+        }
+    }
+
+    if (Get-Command nginx -ErrorAction SilentlyContinue) {
+        try {
+            $root = Get-NginxRoot
+            $nginxExe = Get-NginxExe $root
+            $validation = & $nginxExe -t -p "$root\" 2>&1
+            if ($LASTEXITCODE -eq 0) { Write-Ok 'Nginx configuration is valid.' }
+            else { Write-Warn ($validation -join ' ') }
+        } catch {
+            Write-Warn $_.Exception.Message
+        }
     }
 }
 
 function Get-ComponentCatalog {
     return @(
-        [pscustomobject]@{ Name='Node.js'; Probe='node'; Install='Install-Node'; Remove='Remove-Node' }
-        [pscustomobject]@{ Name='PM2 process manager'; Probe='pm2'; Install='Install-PM2'; Remove='Remove-PM2' }
-        [pscustomobject]@{ Name='MySQL Server'; Probe='mysql'; Install='Install-MySQL'; Remove='Remove-MySQL' }
-        [pscustomobject]@{ Name='MySQL Workbench'; Probe='workbench'; Install='Install-MySQLWorkbench'; Remove='Remove-MySQLWorkbench' }
-        [pscustomobject]@{ Name='Nginx'; Probe='nginx'; Install='Install-Nginx'; Remove='Remove-Nginx' }
-        [pscustomobject]@{ Name='Micro editor'; Probe='micro'; Install='Install-Micro'; Remove='Remove-Micro' }
-        [pscustomobject]@{ Name='Glances monitor'; Probe='glances'; Install='Install-Glances'; Remove='Remove-Glances' }
-        [pscustomobject]@{ Name='win-acme SSL'; Probe='wacs'; Install='Install-WinAcme'; Remove='Remove-WinAcme' }
+        [pscustomobject]@{ Name='Node.js'; Probe='node'; Complete=$true; Install='Install-Node'; Remove='Remove-Node' }
+        [pscustomobject]@{ Name='PM2 process manager'; Probe='pm2'; Complete=$true; Install='Install-PM2'; Remove='Remove-PM2' }
+        [pscustomobject]@{ Name='MySQL Server'; Probe='mysql'; Complete=$true; Install='Install-MySQL'; Remove='Remove-MySQL' }
+        [pscustomobject]@{ Name='MySQL Workbench'; Probe='workbench'; Complete=$true; Install='Install-MySQLWorkbench'; Remove='Remove-MySQLWorkbench' }
+        [pscustomobject]@{ Name='Nginx'; Probe='nginx'; Complete=$true; Install='Install-Nginx'; Remove='Remove-Nginx' }
+        [pscustomobject]@{ Name='Micro editor'; Probe='micro'; Complete=$true; Install='Install-Micro'; Remove='Remove-Micro' }
+        [pscustomobject]@{ Name='Glances monitor'; Probe='glances'; Complete=$true; Install='Install-Glances'; Remove='Remove-Glances' }
+        [pscustomobject]@{ Name='win-acme SSL'; Probe='wacs'; Complete=$false; Install='Install-WinAcme'; Remove='Remove-WinAcme' }
     )
+}
+
+function Get-ComponentPath {
+    param([Parameter(Mandatory)]$Item)
+    if ($Item.Probe -eq 'workbench') {
+        $match = Get-Item "$env:ProgramFiles\MySQL\MySQL Workbench*\MySQLWorkbench.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (-not $match) {
+            $match = Get-Item "${env:ProgramFiles(x86)}\MySQL\MySQL Workbench*\MySQLWorkbench.exe" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+        }
+        return $match.FullName
+    }
+    if ($Item.Probe -eq 'wacs') { return Get-WacsPath }
+    $command = Get-Command $Item.Probe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    return $null
+}
+
+function Test-ComponentInstalled {
+    param([Parameter(Mandatory)]$Item)
+    return [bool](Get-ComponentPath $Item)
 }
 
 function Select-Components {
     param([Parameter(Mandatory)][string]$Verb)
-    $items = @(Get-ComponentCatalog)
-    $selected = [bool[]]::new($items.Count)
-    $cursor = 0
-    while ($true) {
+    $items = if ($Verb -eq 'Install') {
+        @(Get-ComponentCatalog | Where-Object { -not (Test-ComponentInstalled $_) })
+    } else {
+        @(Get-ComponentCatalog | Where-Object { Test-ComponentInstalled $_ })
+    }
+    if (-not $items.Count) {
         Clear-Host
         Show-Brand
-        Write-Host "  $Verb components" -ForegroundColor White
-        Write-Host '  Up/Down move  |  Space tick  |  A all  |  Enter continue  |  Esc cancel' -ForegroundColor DarkGray
-        Write-Host ''
+        if ($Verb -eq 'Install') { Write-Ok 'Every available component is already installed.' }
+        else { Write-Info 'No managed components are currently installed.' }
+        return @()
+    }
+    $selected = [bool[]]::new($items.Count)
+    $cursor = 0
+    Clear-Host
+    Show-Brand
+    Write-Theme -Text "  $Verb components" -Role Primary
+    Write-Theme -Text '  Up/Down move  |  Space tick  |  A all  |  Enter continue  |  Esc cancel' -Role Muted
+    Write-Host ''
+    $listTop = $Host.UI.RawUI.CursorPosition.Y
+    $render = {
+        try { $Host.UI.RawUI.CursorPosition = [System.Management.Automation.Host.Coordinates]::new(0, $listTop) } catch {}
         for ($index = 0; $index -lt $items.Count; $index++) {
             $pointer = if ($index -eq $cursor) { '>' } else { ' ' }
             $mark = if ($selected[$index]) { 'x' } else { ' ' }
-            $color = if ($index -eq $cursor) { 'Cyan' } elseif ($selected[$index]) { 'Green' } else { 'Gray' }
-            $probe = $items[$index].Probe
-            $installed = if ($probe -eq 'workbench') {
-                (Test-Path "$env:ProgramFiles\MySQL\MySQL Workbench*\MySQLWorkbench.exe") -or
-                    (Test-Path "${env:ProgramFiles(x86)}\MySQL\MySQL Workbench*\MySQLWorkbench.exe")
-            } else {
-                [bool](Get-Command $probe -ErrorAction SilentlyContinue)
-            }
-            $state = if ($installed) { '  installed' } else { '' }
-            Write-Host ("  {0} [{1}] {2}{3}" -f $pointer, $mark, $items[$index].Name, $state) -ForegroundColor $color
+            $role = if ($index -eq $cursor) { 'Selected' } elseif ($selected[$index]) { 'Secondary' } else { 'Primary' }
+            $state = if ($Verb -eq 'Remove') { 'installed' } else { 'needed' }
+            Write-Theme -Text ("  {0} [{1}] {2,-25} {3,-12}  " -f $pointer, $mark, $items[$index].Name, $state) -Role $role
         }
+    }
+    & $render
+    while ($true) {
         $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
         switch ($key.VirtualKeyCode) {
             38 { $cursor = ($cursor - 1 + $items.Count) % $items.Count }
@@ -617,16 +838,17 @@ function Select-Components {
             }
             27 { return @() }
         }
+        & $render
     }
 }
 
 function Invoke-ComponentWorkflow {
     param([ValidateSet('Install','Remove')][string]$Mode)
     $items = @(Select-Components -Verb $Mode)
-    if (-not $items.Count) { Write-Info 'No components selected.'; return }
+    if (-not $items.Count) { return }
     Write-Host ''
     Write-Rule "$($Mode.ToUpper()) PLAN"
-    $items | ForEach-Object { Write-Host "  * $($_.Name)" -ForegroundColor White }
+    $items | ForEach-Object { Write-Theme -Text "  * $($_.Name)" -Role Primary }
     if (-not (Confirm-Action "$Mode these $($items.Count) component(s)?")) { return }
     foreach ($item in $items) {
         Write-Rule $item.Name
@@ -636,36 +858,75 @@ function Invoke-ComponentWorkflow {
     Write-Ok "$Mode workflow complete."
 }
 
+function Get-MainActions {
+    return @(
+        [pscustomobject]@{ Id='install'; Label='Install components'; Hint='Choose one or several tools for this machine.' }
+        [pscustomobject]@{ Id='remove'; Label='Remove components'; Hint='Select installed tools you no longer need.' }
+        [pscustomobject]@{ Id='complete'; Label='Install complete stack'; Hint='Node.js, PM2, MySQL, Workbench, Nginx and utilities.' }
+        [pscustomobject]@{ Id='startup'; Label='Configure PM2 startup'; Hint='Restore your Node.js apps after a restart.' }
+        [pscustomobject]@{ Id='domain'; Label='Connect a domain'; Hint='Route a hostname through Nginx to a PM2 app.' }
+        [pscustomobject]@{ Id='ssl'; Label='Enable HTTPS'; Hint='Request and renew a free TLS certificate.' }
+        [pscustomobject]@{ Id='health'; Label='Inspect stack health'; Hint='See what is installed and validate Nginx.' }
+        [pscustomobject]@{ Id='creator'; Label='Creator and support'; Hint='View Mohamed Aiman''s links and ASCII portrait.' }
+        [pscustomobject]@{ Id='exit'; Label='Exit NEEM'; Hint='Return to your terminal.' }
+    )
+}
+
+function Select-MainAction {
+    $actions = @(Get-MainActions)
+    $cursor = 0
+    Clear-Host
+    Show-Brand
+    Write-Theme -Text "  Windows  |  $script:PackageManager$(if ($DryRun) {'  |  DRY RUN'})" -Role Muted
+    Write-Host ''
+    Write-Theme -Text '  What would you like to do?' -Role Primary
+    Write-Theme -Text '  Up/Down move  |  Enter select  |  Esc exit  |  Number shortcuts work too' -Role Muted
+    Write-Host ''
+    $listTop = $Host.UI.RawUI.CursorPosition.Y
+    $render = {
+        try { $Host.UI.RawUI.CursorPosition = [System.Management.Automation.Host.Coordinates]::new(0, $listTop) } catch {}
+        for ($index = 0; $index -lt $actions.Count; $index++) {
+            $active = $index -eq $cursor
+            $pointer = if ($active) { '>' } else { ' ' }
+            $role = if ($active) { 'Selected' } elseif ($actions[$index].Id -eq 'exit') { 'Muted' } else { 'Primary' }
+            Write-Theme -Text ("  {0} {1,-40}  " -f $pointer, $actions[$index].Label) -Role $role
+        }
+        Write-Theme -Text ("      {0,-68}" -f $actions[$cursor].Hint) -Role Secondary
+    }
+    & $render
+    while ($true) {
+        $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+        switch ($key.VirtualKeyCode) {
+            38 { $cursor = ($cursor - 1 + $actions.Count) % $actions.Count }
+            40 { $cursor = ($cursor + 1) % $actions.Count }
+            13 { return $actions[$cursor].Id }
+            27 { return 'exit' }
+            48 { return 'exit' }
+            { $_ -ge 49 -and $_ -le 56 } { return $actions[$_ - 49].Id }
+        }
+        & $render
+    }
+}
+
 function Show-MainMenu {
     while ($true) {
-        Clear-Host
-        Show-Brand
-        Write-Host "  Windows  |  $script:PackageManager$(if ($DryRun) {'  |  DRY RUN'})" -ForegroundColor DarkGray
-        Write-Host ''
-        Write-Host '  1  Install selected components' -ForegroundColor White
-        Write-Host '  2  Remove selected components' -ForegroundColor White
-        Write-Host '  3  Install the complete stack' -ForegroundColor White
-        Write-Host '  4  Configure PM2 startup'
-        Write-Host '  5  Connect a domain to a PM2 app'
-        Write-Host '  6  Enable SSL for an existing domain'
-        Write-Host '  7  Run health check'
-        Write-Host '  8  Meet the creator + support'
-        Write-Host '  0  Exit' -ForegroundColor DarkGray
-        Write-Host ''
+        $pauseAfterAction = $true
         try {
-            switch (Read-Host '  Select an action') {
-                '1' { Invoke-ComponentWorkflow -Mode Install }
-                '2' { Invoke-ComponentWorkflow -Mode Remove }
-                '3' { Install-All } '4' { Set-PM2Startup }
-                '5' { Connect-Domain } '6' { Enable-Ssl } '7' { Show-Health }
-                '8' { Show-CreatorCard }
-                '0' { Write-Host 'Goodbye.'; return }
-                default { Write-Warn 'Choose a listed option.' }
+            switch (Select-MainAction) {
+                'install' { Invoke-ComponentWorkflow -Mode Install }
+                'remove' { Invoke-ComponentWorkflow -Mode Remove }
+                'complete' { Install-All }
+                'startup' { Set-PM2Startup }
+                'domain' { Connect-Domain }
+                'ssl' { Enable-Ssl }
+                'health' { Show-Health }
+                'creator' { Show-CreatorCard; $pauseAfterAction = $false }
+                'exit' { Write-Host 'Goodbye.'; return }
             }
         } catch {
-            Write-Host "[x] $($_.Exception.Message)" -ForegroundColor Red
+            Write-Theme -Text "[x] $($_.Exception.Message)" -Role Accent
         }
-        if (-not $DryRun) { [void](Read-Host 'Press Enter to continue') }
+        if (-not $DryRun -and $pauseAfterAction) { [void](Read-Host 'Press Enter to continue') }
     }
 }
 
@@ -679,16 +940,17 @@ Without options, launches the interactive terminal menu.
   -DryRun  Print package and service commands without running them
   -Health  Show installed components and validate Nginx
 
-Interactive picker:
-  Up/Down  Move between components
+Keyboard controls:
+  Up/Down  Move through menus
+  Enter    Open the highlighted action
   Space    Tick or untick a component
-  A        Tick or untick all
-  Enter    Continue with the selection
+  A        Tick or untick all components
+  1-8      Main-menu shortcuts
 "@
 }
 
 if ($Help) { Show-Usage; exit 0 }
-if (-not (Test-Administrator)) {
+if (-not (Test-Administrator) -and -not $NoElevate) {
     if (-not $DryRun -and -not $Health) {
         Write-Info 'Requesting administrator access...'
         $scriptPath = $MyInvocation.MyCommand.Path

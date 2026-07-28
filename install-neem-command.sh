@@ -3,19 +3,15 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-APP_DIR="$DATA_HOME/neem-stack"
 BIN_DIR="$HOME/.local/bin"
 COMMAND_PATH="$BIN_DIR/neem-stack"
+SHORT_COMMAND_PATH="$BIN_DIR/neem"
 
-mkdir -p "$APP_DIR" "$BIN_DIR"
-install -m 0755 "$SCRIPT_DIR/neem.sh" "$APP_DIR/neem.sh"
-if [[ -f "$SCRIPT_DIR/ASCI_ART_ME.txt" ]]; then
-  install -m 0644 "$SCRIPT_DIR/ASCI_ART_ME.txt" "$APP_DIR/ASCI_ART_ME.txt"
-fi
-
-printf '#!/usr/bin/env bash\nexec bash %q "$@"\n' "$APP_DIR/neem.sh" > "$COMMAND_PATH"
+mkdir -p "$BIN_DIR"
+printf '#!/usr/bin/env bash\nexec bash %q "$@"\n' "$SCRIPT_DIR/neem.sh" > "$COMMAND_PATH"
 chmod 0755 "$COMMAND_PATH"
+cp "$COMMAND_PATH" "$SHORT_COMMAND_PATH"
+chmod 0755 "$SHORT_COMMAND_PATH"
 
 case "${SHELL:-}" in
   */zsh) profile="$HOME/.zshrc" ;;
@@ -30,5 +26,7 @@ fi
 
 printf '\nNEEM command installed.\n'
 printf 'Location: %s\n\n' "$COMMAND_PATH"
+printf 'Live project: %s\n\n' "$SCRIPT_DIR"
 printf 'Open a new terminal, then run:\n'
 printf '  neem-stack\n'
+printf '  neem\n'

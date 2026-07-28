@@ -3,8 +3,8 @@
 # NEEM Stack Setup - interactive Linux/macOS server bootstrapper
 #
 # THESIS: A calm command centre for assembling a server stack, not a numbered
-# prompt maze. OWN-WORLD: ink-black terminal, cyan structure, green completion,
-# amber caution, crisp rules and native checkbox controls. STORY: see the stack,
+# prompt maze. OWN-WORLD: NEEM red, charcoal surfaces, cream-white type, cool
+# gray hierarchy, crisp rules and native checkbox controls. STORY: see the stack,
 # select any combination, review it, then install or remove with confidence.
 # FIRST VIEWPORT: compact NEEM masthead, platform state, creator credit, then a
 # short action menu. FORM: keyboard-operated terminal workbench with a dedicated
@@ -12,17 +12,41 @@
 
 set -Eeuo pipefail
 
-VERSION="2.0.0"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+VERSION_FILE="$SCRIPT_DIR/VERSION"
+if [[ ! -r "$VERSION_FILE" ]]; then
+  printf 'Version file not found: %s\n' "$VERSION_FILE" >&2
+  exit 1
+fi
+VERSION=$(tr -d '\r\n' < "$VERSION_FILE")
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+  printf 'Invalid version in %s: %s\n' "$VERSION_FILE" "$VERSION" >&2
+  exit 1
+fi
 DRY_RUN=0
 OS=""
 PKG=""
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SUPPORTS_HYPERLINKS=0
 
 if [[ -t 1 ]]; then
-  BOLD=$'\033[1m'; BLUE=$'\033[34m'; GREEN=$'\033[32m'
-  YELLOW=$'\033[33m'; RED=$'\033[31m'; RESET=$'\033[0m'
+  BOLD=$'\033[1m'
+  ACCENT=$'\033[38;2;197;29;52m'
+  DARK_SURFACE=$'\033[48;2;46;46;48m'
+  MUTED=$'\033[38;2;128;128;128m'
+  SUBTLE=$'\033[38;2;90;90;90m'
+  PAPER=$'\033[38;2;245;245;245m'
+  CREAM=$'\033[38;2;253;251;247m'
+  SELECTED=$'\033[38;2;253;251;247;48;2;46;46;48m'
+  BLUE=$ACCENT; GREEN=$PAPER; YELLOW=$MUTED; RED=$ACCENT
+  RESET=$'\033[0m'
 else
-  BOLD=""; BLUE=""; GREEN=""; YELLOW=""; RED=""; RESET=""
+  BOLD=""; ACCENT=""; DARK_SURFACE=""; MUTED=""; SUBTLE=""
+  PAPER=""; CREAM=""; SELECTED=""; BLUE=""; GREEN=""; YELLOW=""
+  RED=""; RESET=""
+fi
+if [[ -t 1 && (-n "${WT_SESSION:-}" || -n "${TERM_PROGRAM:-}" ||
+  -n "${VTE_VERSION:-}" || -n "${KITTY_WINDOW_ID:-}" || -n "${KONSOLE_VERSION:-}") ]]; then
+  SUPPORTS_HYPERLINKS=1
 fi
 
 info() { printf '%sℹ%s %s\n' "$BLUE" "$RESET" "$*"; }
@@ -31,47 +55,123 @@ warn() { printf '%s!%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
 die() { printf '%s✗%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 pause() { [[ $DRY_RUN -eq 1 ]] || read -r -p "Press Enter to continue..." _; }
 
+hyperlink() {
+  local label=$1 url=$2 prefix=${3:-"  "}
+  if ((SUPPORTS_HYPERLINKS)); then
+    printf '%s%s%s\033]8;;%s\033\\%s\033]8;;\033\\%s\n' "$MUTED" "$prefix" "$PAPER" "$url" "$label" "$RESET"
+  else
+    printf '%s%s <%s>\n' "$prefix" "$label" "$url"
+  fi
+}
+
 rule() {
   local title=${1:-} width=68 line fill
   if [[ -n "$title" ]]; then
     printf -v line -- '-- %s ' "$title"
     printf -v fill '%*s' "$((width-${#line}))" ''
-    printf '%s%s%s%s\n' "$BLUE" "$line" "${fill// /-}" "$RESET"
+    printf '%s%s%s%s\n' "$SUBTLE" "$line" "${fill// /-}" "$RESET"
   else
     printf -v fill '%*s' "$width" ''
-    printf '%s%s%s\n' "$BLUE" "${fill// /-}" "$RESET"
+    printf '%s%s%s\n' "$SUBTLE" "${fill// /-}" "$RESET"
   fi
 }
 
 show_brand() {
-  printf '\n%s' "$BLUE"
+  printf '\n%s' "$ACCENT"
   printf '  _   _  _____ _____ __  __\n'
   printf ' | \\ | || ____| ____|  \\/  |\n'
   printf ' |  \\| ||  _| |  _| | |\\/| |\n'
   printf ' | |\\  || |___| |___| |  | |\n'
   printf ' |_| \\_||_____|_____|_|  |_|\n'
-  printf '%s  Stack Setup%s  v%s\n' "$BOLD" "$RESET" "$VERSION"
-  printf '  Built with care by Mohamed Aiman\n'
+  printf '%s%s  Stack Setup%s%s  v%s%s\n' "$CREAM" "$BOLD" "$RESET" "$MUTED" "$VERSION" "$RESET"
+  printf '%s  Built with care by Mohamed Aiman%s\n' "$MUTED" "$RESET"
   rule
 }
 
 show_creator() {
-  clear 2>/dev/null || true
-  show_brand
+  local cols row left key url line column compact shift source_row=0 last_cols=-1
+  local -a art_lines=()
   if [[ -f "$SCRIPT_DIR/ASCI_ART_ME.txt" ]]; then
-    printf '%s' "$BLUE"
-    while IFS= read -r line; do printf '%s\n' "$line"; done < "$SCRIPT_DIR/ASCI_ART_ME.txt"
-    printf '%s' "$RESET"
+    while IFS= read -r line; do
+      source_row=$((source_row + 1))
+      ((source_row % 6 == 0)) && continue
+      compact=""
+      for ((column=0; column<${#line}; column++)); do
+        (((column + 1) % 8 == 0)) || compact+="${line:column:1}"
+      done
+      for ((shift=0; shift<12 && ${#compact}>0; shift++)); do
+        [[ "${compact:0:1}" == " " ]] && compact=${compact# } || break
+      done
+      art_lines+=("$compact")
+    done < "$SCRIPT_DIR/ASCI_ART_ME.txt"
+  else
+    art_lines=("  ASCII portrait not found.")
   fi
-  rule "CREATOR"
-  printf '  %sMohamed Aiman%s\n' "$BOLD" "$RESET"
-  printf '  Email        %smohamedaiman103@gmail.com%s\n' "$BLUE" "$RESET"
-  printf '  Portfolio    %shttps://darkguyaiman.com%s\n' "$BLUE" "$RESET"
-  printf '  LinkedIn     %sdarkguyaiman%s\n' "$BLUE" "$RESET"
-  printf '  Instagram    %sdarkguyaiman%s\n' "$BLUE" "$RESET"
-  printf '  X / Twitter  %sthedarkguyaiman%s\n\n' "$BLUE" "$RESET"
-  printf '  Support      https://ko-fi.com/darkguyaiman\n'
-  printf '               https://paypal.me/thedarkguyaiman\n'
+  while true; do
+    cols=$(tput cols 2>/dev/null || printf '120')
+    if ((cols != last_cols)); then
+      clear 2>/dev/null || true
+      if ((cols >= 138)); then
+        for ((row=0; row<${#art_lines[@]}; row++)); do
+          left=${art_lines[row]}
+          printf '%s%-104s%s' "$SUBTLE" "$left" "$RESET"
+          case "$row" in
+            5) printf '%sMOHAMED AIMAN%s\n' "$ACCENT" "$RESET" ;;
+            6) printf '%sCreator of NEEM Stack Setup%s\n' "$MUTED" "$RESET" ;;
+            9) hyperlink "mohamedaiman103@gmail.com" "mailto:mohamedaiman103@gmail.com" "[1] Email       " ;;
+            11) hyperlink "darkguyaiman.com" "https://darkguyaiman.com" "[2] Portfolio   " ;;
+            13) hyperlink "linkedin.com/in/darkguyaiman" "https://www.linkedin.com/in/darkguyaiman" "[3] LinkedIn    " ;;
+            15) hyperlink "instagram.com/darkguyaiman" "https://www.instagram.com/darkguyaiman" "[4] Instagram   " ;;
+            17) hyperlink "x.com/thedarkguyaiman" "https://x.com/thedarkguyaiman" "[5] X / Twitter " ;;
+            19) hyperlink "ko-fi.com/darkguyaiman" "https://ko-fi.com/darkguyaiman" "[6] Ko-fi       " ;;
+            21) hyperlink "paypal.me/thedarkguyaiman" "https://paypal.me/thedarkguyaiman" "[7] PayPal      " ;;
+            25)
+              if ((SUPPORTS_HYPERLINKS)); then
+                printf '%sCtrl+click a link, or press 1-7 to open.%s\n' "$MUTED" "$RESET"
+              else
+                printf '%sPress 1-7 to open a link.%s\n' "$MUTED" "$RESET"
+              fi
+              ;;
+            *) printf '\n' ;;
+          esac
+        done
+      else
+        printf '%s' "$SUBTLE"
+        printf '%s\n' "${art_lines[@]}"
+        printf '%s' "$RESET"
+        rule "CREATOR"
+        printf '  %s%sMohamed Aiman%s | Creator of NEEM Stack Setup\n' "$CREAM" "$BOLD" "$RESET"
+        hyperlink "mohamedaiman103@gmail.com" "mailto:mohamedaiman103@gmail.com" "  [1] Email       "
+        hyperlink "darkguyaiman.com" "https://darkguyaiman.com" "  [2] Portfolio   "
+        hyperlink "linkedin.com/in/darkguyaiman" "https://www.linkedin.com/in/darkguyaiman" "  [3] LinkedIn    "
+        hyperlink "instagram.com/darkguyaiman" "https://www.instagram.com/darkguyaiman" "  [4] Instagram   "
+        hyperlink "x.com/thedarkguyaiman" "https://x.com/thedarkguyaiman" "  [5] X / Twitter "
+        hyperlink "ko-fi.com/darkguyaiman" "https://ko-fi.com/darkguyaiman" "  [6] Ko-fi       "
+        hyperlink "paypal.me/thedarkguyaiman" "https://paypal.me/thedarkguyaiman" "  [7] PayPal      "
+      fi
+      printf '\n%s  Press 1-7 to open a link | Enter or Esc to return | Resize to reflow%s\n' "$MUTED" "$RESET"
+      last_cols=$cols
+    fi
+    if ! IFS= read -rsn1 -t 0.1 key < /dev/tty; then
+      continue
+    fi
+    case "$key" in
+      1) url="mailto:mohamedaiman103@gmail.com" ;;
+      2) url="https://darkguyaiman.com" ;;
+      3) url="https://www.linkedin.com/in/darkguyaiman" ;;
+      4) url="https://www.instagram.com/darkguyaiman" ;;
+      5) url="https://x.com/thedarkguyaiman" ;;
+      6) url="https://ko-fi.com/darkguyaiman" ;;
+      7) url="https://paypal.me/thedarkguyaiman" ;;
+      ""|$'\e') return ;;
+      *) continue ;;
+    esac
+    if [[ "$OS" == "macos" ]]; then run open "$url"
+    elif command -v xdg-open >/dev/null 2>&1; then run xdg-open "$url"
+    else warn "Open this address in your browser: $url"
+    fi
+    last_cols=-1
+  done
 }
 
 run() {
@@ -254,15 +354,24 @@ install_certbot() {
 }
 
 install_all() {
-  info "This installs Node.js, PM2, MySQL, Nginx, Micro and Glances."
-  confirm "Install the complete NEEM stack?" || return
+  local index fn
+  local -a needed=()
+  for index in 0 1 2 3 4 5; do
+    component_installed "$index" || needed+=("$index")
+  done
+  if ((${#needed[@]} == 0)); then
+    ok "The complete NEEM stack is already installed. Nothing to do."
+    return
+  fi
+  rule "COMPLETE STACK PLAN"
+  for index in "${needed[@]}"; do printf '  + %s\n' "${COMPONENT_NAMES[index]}"; done
+  info "${#needed[@]} missing component(s) will be installed; existing tools are skipped."
+  confirm "Install the missing components?" || return
   package_refresh
-  install_node
-  install_pm2
-  install_mysql
-  install_nginx
-  install_micro
-  install_glances
+  for index in "${needed[@]}"; do
+    fn=${COMPONENT_INSTALL[index]}
+    "$fn"
+  done
   ok "The NEEM stack is installed."
 }
 
@@ -320,25 +429,60 @@ COMPONENT_INSTALL=(install_node install_pm2 install_mysql install_nginx install_
 COMPONENT_REMOVE=(remove_node remove_pm2 remove_mysql remove_nginx remove_micro remove_glances remove_certbot)
 SELECTED_COMPONENTS=()
 
+component_installed() {
+  case "$1" in
+    0) command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 ;;
+    1) command -v pm2 >/dev/null 2>&1 ;;
+    2) command -v mysqld >/dev/null 2>&1 || command -v mariadbd >/dev/null 2>&1 ;;
+    3) command -v nginx >/dev/null 2>&1 ;;
+    4) command -v micro >/dev/null 2>&1 ;;
+    5) command -v glances >/dev/null 2>&1 ;;
+    6) command -v certbot >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
 select_components() {
-  local verb=$1 cursor=0 key rest index target=1
-  local -a checked=(0 0 0 0 0 0 0)
+  local verb=$1 cursor=0 key rest index position component target=1 mark first_render=1
+  local -a available=() checked=()
   SELECTED_COMPONENTS=()
+  for index in "${!COMPONENT_NAMES[@]}"; do
+    if [[ "$verb" == "Install" ]]; then
+      component_installed "$index" || available+=("$index")
+    else
+      component_installed "$index" && available+=("$index")
+    fi
+  done
+  if ((${#available[@]} == 0)); then
+    clear 2>/dev/null || true
+    show_brand
+    if [[ "$verb" == "Install" ]]; then ok "Every available component is already installed."
+    else info "No managed components are currently installed."
+    fi
+    return 1
+  fi
+  for index in "${!available[@]}"; do checked+=(0); done
   if [[ ! -t 0 || ! -r /dev/tty ]]; then
     warn "The checkbox picker needs an interactive terminal."
     return 1
   fi
+  clear 2>/dev/null || true
+  show_brand
+  printf '  %s%s%s components%s\n' "$CREAM" "$BOLD" "$verb" "$RESET"
+  printf '%s  Up/Down move | Space tick | A all | Enter continue | Esc cancel%s\n\n' "$MUTED" "$RESET"
   while true; do
-    clear 2>/dev/null || true
-    show_brand
-    printf '  %s%s components%s\n' "$BOLD" "$verb" "$RESET"
-    printf '  Up/Down move | Space tick | A all | Enter continue | Esc cancel\n\n'
-    for index in "${!COMPONENT_NAMES[@]}"; do
-      if ((index == cursor)); then printf '%s  >' "$BLUE"; else printf '   '; fi
-      if ((checked[index])); then
-        printf ' [%sx%s] %s%s\n' "$GREEN" "$RESET" "${COMPONENT_NAMES[index]}" "$RESET"
+    if ((first_render)); then first_render=0
+    else printf '\033[%dA' "${#available[@]}"
+    fi
+    for position in "${!available[@]}"; do
+      component=${available[position]}
+      if ((position == cursor)); then
+        if ((checked[position])); then mark=x; else mark=' '; fi
+        printf '\033[2K\r%s  > [%s] %-28s %-10s %s\n' "$SELECTED" "$mark" "${COMPONENT_NAMES[component]}" "$([[ "$verb" == "Install" ]] && echo needed || echo installed)" "$RESET"
+      elif ((checked[position])); then
+        printf '\033[2K\r    [%sx%s] %s%s%s\n' "$ACCENT" "$RESET" "$CREAM" "${COMPONENT_NAMES[component]}" "$RESET"
       else
-        printf ' [ ] %s%s\n' "${COMPONENT_NAMES[index]}" "$RESET"
+        printf '\033[2K\r%s    [ ] %s%s\n' "$CREAM" "${COMPONENT_NAMES[component]}" "$RESET"
       fi
     done
 
@@ -347,8 +491,8 @@ select_components() {
       rest=""
       IFS= read -rsn2 -t 0.1 rest < /dev/tty || true
       case "$rest" in
-        '[A') cursor=$(((cursor - 1 + ${#COMPONENT_NAMES[@]}) % ${#COMPONENT_NAMES[@]})) ;;
-        '[B') cursor=$(((cursor + 1) % ${#COMPONENT_NAMES[@]})) ;;
+        '[A') cursor=$(((cursor - 1 + ${#available[@]}) % ${#available[@]})) ;;
+        '[B') cursor=$(((cursor + 1) % ${#available[@]})) ;;
         '') return 1 ;;
       esac
     elif [[ "$key" == " " ]]; then
@@ -359,8 +503,8 @@ select_components() {
       target=$((1-target))
       for index in "${!checked[@]}"; do checked[index]=$target; done
     elif [[ -z "$key" ]]; then
-      for index in "${!checked[@]}"; do
-        ((checked[index])) && SELECTED_COMPONENTS+=("$index")
+      for position in "${!checked[@]}"; do
+        ((checked[position])) && SELECTED_COMPONENTS+=("${available[position]}")
       done
       return 0
     fi
@@ -570,42 +714,121 @@ pm2_startup() {
 }
 
 health_check() {
-  printf '\n%sNEEM stack status%s\n' "$BOLD" "$RESET"
-  local item cmd
+  clear 2>/dev/null || true
+  show_brand
+  local item cmd path cols max_path keep ready=0 total=8
+  cols=$(tput cols 2>/dev/null || printf '100')
+  max_path=$((cols - 38))
+  ((max_path < 24)) && max_path=24
+  for item in "Node.js:node" "npm:npm" "PM2:pm2" "MySQL:mysql" "Nginx:nginx" "Micro:micro" "Glances:glances" "Certbot:certbot"; do
+    cmd=${item#*:}
+    command -v "$cmd" >/dev/null 2>&1 && ready=$((ready + 1))
+  done
+  rule "STACK HEALTH"
+  printf '%s  %d of %d components ready%s\n' "$CREAM" "$ready" "$total" "$RESET"
+  printf '%s  %-10s %-19s %s%s\n' "$SELECTED" "STATE" "COMPONENT" "LOCATION" "$RESET"
   for item in "Node.js:node" "npm:npm" "PM2:pm2" "MySQL:mysql" "Nginx:nginx" "Micro:micro" "Glances:glances" "Certbot:certbot"; do
     cmd=${item#*:}
     if command -v "$cmd" >/dev/null 2>&1; then
-      printf '  %s✓%s %-12s %s\n' "$GREEN" "$RESET" "${item%%:*}" "$(command -v "$cmd")"
+      path=$(command -v "$cmd")
+      if ((${#path} > max_path)); then
+        keep=$((max_path - 3))
+        path="...${path: -$keep}"
+      fi
+      printf '%s  %-10s %-19s %s%s\n' "$PAPER" "READY" "${item%%:*}" "$path" "$RESET"
     else
-      printf '  %s–%s %-12s not installed\n' "$YELLOW" "$RESET" "${item%%:*}"
+      printf '%s  %-10s %-19s %s%s\n' "$MUTED" "MISSING" "${item%%:*}" "not installed" "$RESET"
     fi
   done
-  if command -v pm2 >/dev/null 2>&1; then printf '\n'; pm2 ls || true; fi
-  if command -v nginx >/dev/null 2>&1; then root_run nginx -t || true; fi
+  if command -v pm2 >/dev/null 2>&1; then
+    printf '\n'
+    rule "PM2 APPLICATIONS"
+    pm2 jlist 2>/dev/null | node -e '
+      let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+        try {
+          const apps=JSON.parse(s);
+          if (!apps.length) return console.log("  No PM2 applications are running.");
+          console.log("  ID   NAME                   STATUS        CPU     MEMORY");
+          for (const app of apps) {
+            const m=((app.monit?.memory||0)/1048576).toFixed(1)+" MB";
+            console.log(`  ${String(app.pm_id).padEnd(4)} ${app.name.slice(0,22).padEnd(22)} ${String(app.pm2_env.status).padEnd(10)} ${String(app.monit?.cpu||0).padStart(5)}% ${m.padStart(10)}`);
+          }
+        } catch (_) { console.log("  PM2 process details could not be read."); }
+      });'
+  fi
+  if command -v nginx >/dev/null 2>&1; then
+    if root_run nginx -t; then ok "Nginx configuration is valid."
+    else warn "Nginx configuration validation failed."
+    fi
+  fi
+}
+
+MENU_IDS=(install remove complete startup domain ssl health creator exit)
+MENU_LABELS=("Install components" "Remove components" "Install complete stack" "Configure PM2 startup" "Connect a domain" "Enable HTTPS" "Inspect stack health" "Creator and support" "Exit NEEM")
+MENU_HINTS=("Choose one or several tools for this machine." "Select installed tools you no longer need." "Install Node.js, PM2, MySQL, Nginx and utilities." "Restore your Node.js apps after a restart." "Route a hostname through Nginx to a PM2 app." "Request and renew a free TLS certificate." "See what is installed and validate Nginx." "View Mohamed Aiman's links and ASCII portrait." "Return to your terminal.")
+MAIN_ACTION=""
+
+select_main_action() {
+  local cursor=0 key rest index shortcut first_render=1
+  MAIN_ACTION=""
+  clear 2>/dev/null || true
+  show_brand
+  printf '%s  %s | %s%s%s\n\n' "$MUTED" "$OS" "$PKG" "$([[ $DRY_RUN -eq 1 ]] && echo ' | DRY RUN')" "$RESET"
+  printf '  %s%sWhat would you like to do?%s\n' "$CREAM" "$BOLD" "$RESET"
+  printf '%s  Up/Down move | Enter select | Esc exit | Number shortcuts work too%s\n\n' "$MUTED" "$RESET"
+  while true; do
+    if ((first_render)); then first_render=0
+    else printf '\033[%dA' "$((${#MENU_LABELS[@]} + 1))"
+    fi
+    for index in "${!MENU_LABELS[@]}"; do
+      if ((index == cursor)); then
+        printf '\033[2K\r%s  > %-36s  %s\n' "$SELECTED" "${MENU_LABELS[index]}" "$RESET"
+      elif [[ "${MENU_IDS[index]}" == "exit" ]]; then
+        printf '\033[2K\r%s    %s%s\n' "$MUTED" "${MENU_LABELS[index]}" "$RESET"
+      else
+        printf '\033[2K\r%s    %s%s\n' "$CREAM" "${MENU_LABELS[index]}" "$RESET"
+      fi
+    done
+    printf '\033[2K\r%s      %-68s%s\n' "$PAPER" "${MENU_HINTS[cursor]}" "$RESET"
+
+    IFS= read -rsn1 key < /dev/tty || true
+    if [[ "$key" == $'\e' ]]; then
+      rest=""
+      IFS= read -rsn2 -t 0.1 rest < /dev/tty || true
+      case "$rest" in
+        '[A') cursor=$(((cursor - 1 + ${#MENU_IDS[@]}) % ${#MENU_IDS[@]})) ;;
+        '[B') cursor=$(((cursor + 1) % ${#MENU_IDS[@]})) ;;
+        '') MAIN_ACTION=exit; return ;;
+      esac
+    elif [[ -z "$key" ]]; then
+      MAIN_ACTION=${MENU_IDS[cursor]}
+      return
+    elif [[ "$key" == "0" ]]; then
+      MAIN_ACTION=exit
+      return
+    elif [[ "$key" =~ ^[1-8]$ ]]; then
+      shortcut=$((10#$key - 1))
+      MAIN_ACTION=${MENU_IDS[shortcut]}
+      return
+    fi
+  done
 }
 
 main_menu() {
+  local action
   while true; do
-    clear 2>/dev/null || true
-    show_brand
-    printf '  %s | %s%s\n\n' "$OS" "$PKG" "$([[ $DRY_RUN -eq 1 ]] && echo ' | DRY RUN')"
-    printf '  %s1  Install selected components%s\n' "$BOLD" "$RESET"
-    printf '  %s2  Remove selected components%s\n' "$BOLD" "$RESET"
-    printf '  %s3  Install the complete stack%s\n' "$BOLD" "$RESET"
-    printf '  4  Configure PM2 startup\n'
-    printf '  5  Connect a domain to a PM2 app\n'
-    printf '  6  Enable SSL for an existing domain\n'
-    printf '  7  Run health check\n'
-    printf '  8  Meet the creator + support\n'
-    printf '  0  Exit\n\n'
-    read -r -p "  Select an action: " choice
-    case "$choice" in
-      1) component_workflow Install; pause ;;
-      2) component_workflow Remove; pause ;;
-      3) install_all; pause ;; 4) pm2_startup; pause ;;
-      5) configure_domain; pause ;; 6) enable_ssl; pause ;;
-      7) health_check; pause ;; 8) show_creator; pause ;;
-      0) printf 'Goodbye.\n'; return ;; *) warn "Choose a listed option."; pause ;;
+    select_main_action
+    action=$MAIN_ACTION
+    case "$action" in
+      install) component_workflow Install; pause ;;
+      remove) component_workflow Remove; pause ;;
+      complete) install_all; pause ;;
+      startup) pm2_startup; pause ;;
+      domain) configure_domain; pause ;;
+      ssl) enable_ssl; pause ;;
+      health) health_check; pause ;;
+      creator) show_creator ;;
+      exit) printf 'Goodbye.\n'; return ;;
     esac
   done
 }

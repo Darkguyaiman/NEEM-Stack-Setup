@@ -12,31 +12,77 @@ An interactive terminal setup assistant for a Node.js server stack:
 - Guided domain and HTTPS setup
 - MySQL Workbench on Windows
 
-It supports Linux, macOS, and Windows with native scripts—there is no runtime to
-install before launching it.
+It supports Linux, macOS, and Windows with native scripts. Node.js is one of the
+components NEEM can install, but it is not required to launch the setup tool.
+
+## What NEEM can do
+
+| Action | Behavior |
+| --- | --- |
+| Install components | Shows only components that are not currently detected and supports selecting several at once. |
+| Remove components | Shows only detected components and asks for confirmation before removal. |
+| Install complete stack | Installs only the missing parts of the recommended stack. |
+| Configure PM2 startup | Helps restore managed Node.js applications after a restart. |
+| Connect a domain | Creates and validates an Nginx reverse proxy for a selected PM2 application. |
+| Enable HTTPS | Uses Certbot on Linux/macOS or win-acme on Windows. |
+| Inspect stack health | Shows component paths, Nginx status, and a compact PM2 application list. |
+| Creator and support | Shows the creator portrait, contact links, and support links in a responsive layout. |
+
+### Components
+
+| Component | Windows | Linux/macOS |
+| --- | :---: | :---: |
+| Node.js and npm | Yes | Yes |
+| PM2 | Yes | Yes |
+| MySQL Server | Yes | Yes |
+| MySQL Workbench | Yes | — |
+| Nginx | Yes | Yes |
+| Micro editor | Yes | Yes |
+| Glances monitor | Yes | Yes |
+| SSL client | win-acme | Certbot |
+
+## Terminal theme
+
+NEEM uses a true-color terminal palette with `#c51d34` red accents,
+`#2e2e30` selected surfaces, `#808080` and `#5a5a5a` secondary text,
+`#f5f5f5` light text, and `#fdfbf7` cream-white primary text. Older terminals
+receive the nearest available console colors automatically.
 
 ## Interactive component picker
 
-Choose **Install selected components** or **Remove selected components**, then
-build a batch with the keyboard:
+The main command palette and component picker are fully keyboard-operated:
 
 - **Up / Down** moves through the component list.
+- **Enter** opens the highlighted main-menu action.
 - **Space** ticks or unticks the focused component.
 - **A** toggles every component.
-- **Enter** reviews and confirms the batch.
+- **Enter** reviews and confirms a component batch.
 - **Escape** cancels without making changes.
+- **1–8** remain available as quick main-menu shortcuts.
 
 For example, you can tick MySQL, PM2, and Nginx and install all three in one
 run. Removal uses the same picker and always asks for confirmation. Database
 removal never deliberately deletes existing database files or configuration;
 review your package manager's behavior and keep a backup before uninstalling.
 
+The install picker shows only missing components. The remove picker shows only
+components detected on the machine. **Install complete stack** also calculates
+the missing set first and leaves existing tools untouched.
+
+The health screen uses a compact NEEM-native status table and a concise PM2
+application list instead of PM2's full-width default box table.
+
 ## Quick start
 
-### Windows — double-click
+### Windows — double-click or Command Prompt
 
-Double-click `Start-NEEM.cmd`. NEEM automatically asks for administrator access
-when it is needed.
+Double-click `Start-NEEM.cmd`, or run it from Command Prompt:
+
+```bat
+Start-NEEM.cmd
+```
+
+NEEM automatically asks for administrator access when it is needed.
 
 To make `neem-stack` available in every new terminal, run this once:
 
@@ -44,11 +90,19 @@ To make `neem-stack` available in every new terminal, run this once:
 powershell -ExecutionPolicy Bypass -File .\Install-NEEM-Command.ps1
 ```
 
-Open a new PowerShell or Command Prompt window, then start NEEM from anywhere:
+Open a new PowerShell or Command Prompt window, then start NEEM from anywhere
+with either command:
 
 ```powershell
 neem-stack
+neem
 ```
+
+When launched from Command Prompt, NEEM requests administrator access by opening
+an elevated Command Prompt—not a PowerShell prompt. PowerShell is used only as
+the internal Windows execution engine. The installed commands point to the live
+project folder, so interface updates appear immediately; rerun the command
+installer only if you move the project.
 
 ### Linux
 
@@ -61,6 +115,7 @@ Open a new terminal, then start NEEM from anywhere:
 
 ```bash
 neem-stack
+# or: neem
 ```
 
 The command installer writes only to your user folders and does not need root.
@@ -80,6 +135,7 @@ Open a new terminal and run:
 
 ```bash
 neem-stack
+# or: neem
 ```
 
 For a public domain, NEEM switches Nginx from the user-level Homebrew service
@@ -179,7 +235,14 @@ not yet on `PATH`.
 - **X (Twitter):** [thedarkguyaiman](https://x.com/thedarkguyaiman)
 
 The interactive terminal also includes a creator screen with the supplied ASCII
-portrait and these contact details.
+portrait and these contact details. In terminals that support OSC 8 links,
+including Windows Terminal, the links are clickable. The portrait and link panel
+appear side-by-side in wide terminals and automatically reflow while the creator
+screen is open when the terminal is resized. Classic Command Prompt does not
+implement OSC 8 mouse hyperlinks, so press **1–7** to open the corresponding
+link there.
+The portrait is lightly downsampled in the terminal to preserve the side-by-side
+layout without changing the original ASCII source file.
 
 ## Support the project
 
@@ -203,6 +266,21 @@ On Linux/macOS, also validate the Bash script with:
 
 ```bash
 bash -n neem.sh
+```
+
+## Releasing a new version
+
+The plain-text [`VERSION`](VERSION) file is the project's one source of truth
+for the release number. Use a semantic version such as `1.1.0` or
+`1.1.0-beta.1`.
+Both `neem.ps1` and `neem.sh` load and validate that value at startup, so the
+banner and help output stay synchronized.
+
+After changing `VERSION`, run the project validation command above and confirm
+that both launchers report the new number:
+
+```text
+NEEM Stack Setup v1.1.0
 ```
 
 ## License
