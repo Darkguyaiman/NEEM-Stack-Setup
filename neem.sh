@@ -191,11 +191,69 @@ root_run() {
   fi
 }
 
+root_run_secret() {
+  local token=$1
+  printf '%s+%s cloudflared service install <TUNNEL_TOKEN hidden>\n' "$BLUE" "$RESET"
+  [[ $DRY_RUN -eq 1 ]] && return 0
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    cloudflared service install "$token"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo cloudflared service install "$token"
+  else
+    die "This action needs root access, but sudo is not installed."
+  fi
+}
+
+valid_cloudflare_tunnel_token() {
+  local token=$1 normalized decoded padding
+  [[ "$token" =~ ^eyJ[A-Za-z0-9_-]{20,}$ ]] || return 1
+  normalized=${token//-/+}
+  normalized=${normalized//_/\/}
+  case $((${#normalized} % 4)) in
+    2) padding='==' ;;
+    3) padding='=' ;;
+    1) return 1 ;;
+    *) padding='' ;;
+  esac
+  normalized+=$padding
+  decoded=$(printf '%s' "$normalized" | base64 --decode 2>/dev/null ||
+    printf '%s' "$normalized" | base64 -D 2>/dev/null || true)
+  [[ "$decoded" == \{*\} && "$decoded" == *'"a"'* && "$decoded" == *'"t"'* && "$decoded" == *'"s"'* ]]
+}
+
 confirm() {
   local prompt=${1:-"Continue?"} answer
   [[ $DRY_RUN -eq 1 ]] && return 0
   read -r -p "$prompt [y/N] " answer
   [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+read_hidden_paste_input() {
+  local prompt=$1 character visible_stars=0 maximum_stars=12
+  HIDDEN_PASTE_VALUE=""
+  printf '%s ' "$prompt"
+  while IFS= read -rsn1 character; do
+    [[ -n "$character" ]] || break
+    case "$character" in
+      $'\b'|$'\177')
+        if [[ -n "$HIDDEN_PASTE_VALUE" ]]; then
+          HIDDEN_PASTE_VALUE=${HIDDEN_PASTE_VALUE%?}
+          if ((visible_stars > 0 && ${#HIDDEN_PASTE_VALUE} < maximum_stars)); then
+            printf '\b \b'
+            visible_stars=$((visible_stars - 1))
+          fi
+        fi
+        ;;
+      *)
+        HIDDEN_PASTE_VALUE+=$character
+        if ((visible_stars < maximum_stars)); then
+          printf '*'
+          visible_stars=$((visible_stars + 1))
+        fi
+        ;;
+    esac
+  done
+  printf '\n'
 }
 
 need_command() {
@@ -321,6 +379,35 @@ install_nginx() {
   ok "Nginx installation finished."
 }
 
+install_cloudflared() {
+  local machine release_arch temp url
+  if command -v cloudflared >/dev/null 2>&1; then
+    ok "Cloudflare Tunnel (cloudflared) is already installed."
+    return
+  fi
+  info "Installing Cloudflare Tunnel..."
+  case "$PKG" in
+    brew|pacman) package_install cloudflared ;;
+    *)
+      need_command curl
+      machine=$(uname -m)
+      case "$machine" in
+        x86_64|amd64) release_arch=amd64 ;;
+        aarch64|arm64) release_arch=arm64 ;;
+        armv6l|armv7l) release_arch=arm ;;
+        i386|i486|i586|i686) release_arch=386 ;;
+        *) die "Cloudflare Tunnel does not have a supported download for architecture: $machine" ;;
+      esac
+      temp=$(mktemp)
+      url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$release_arch"
+      run curl --fail --location --output "$temp" "$url"
+      root_run install -m 0755 "$temp" /usr/local/bin/cloudflared
+      rm -f "$temp"
+      ;;
+  esac
+  ok "Cloudflare Tunnel installation finished."
+}
+
 install_micro() {
   if command -v micro >/dev/null 2>&1; then ok "Micro is already installed."; return; fi
   info "Installing Micro terminal editor..."
@@ -406,6 +493,19 @@ remove_nginx() {
   package_remove nginx
 }
 
+remove_cloudflared() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files cloudflared.service 2>/dev/null | grep -q '^cloudflared\.service'; then
+    root_run cloudflared service uninstall
+  elif [[ "$OS" == "macos" ]] && launchctl list 2>/dev/null | grep -q 'com.cloudflare.cloudflared'; then
+    root_run cloudflared service uninstall
+  fi
+  case "$PKG" in
+    brew|pacman) package_remove cloudflared ;;
+    *) root_run rm -f /usr/local/bin/cloudflared ;;
+  esac
+  ok "Cloudflare Tunnel removal finished. Cloudflare dashboard routes were left unchanged."
+}
+
 remove_micro() { package_remove micro; }
 
 remove_glances() {
@@ -424,9 +524,9 @@ remove_certbot() {
   esac
 }
 
-COMPONENT_NAMES=("Node.js" "PM2 process manager" "MySQL Server" "Nginx" "Micro editor" "Glances monitor" "Certbot SSL")
-COMPONENT_INSTALL=(install_node install_pm2 install_mysql install_nginx install_micro install_glances install_certbot)
-COMPONENT_REMOVE=(remove_node remove_pm2 remove_mysql remove_nginx remove_micro remove_glances remove_certbot)
+COMPONENT_NAMES=("Node.js" "PM2 process manager" "MySQL Server" "Nginx" "Micro editor" "Glances monitor" "Certbot SSL" "Cloudflare Tunnel")
+COMPONENT_INSTALL=(install_node install_pm2 install_mysql install_nginx install_micro install_glances install_certbot install_cloudflared)
+COMPONENT_REMOVE=(remove_node remove_pm2 remove_mysql remove_nginx remove_micro remove_glances remove_certbot remove_cloudflared)
 SELECTED_COMPONENTS=()
 
 component_installed() {
@@ -438,6 +538,7 @@ component_installed() {
     4) command -v micro >/dev/null 2>&1 ;;
     5) command -v glances >/dev/null 2>&1 ;;
     6) command -v certbot >/dev/null 2>&1 ;;
+    7) command -v cloudflared >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
 }
@@ -713,21 +814,288 @@ pm2_startup() {
   warn "If PM2 printed a sudo command, run that command once to finish startup registration."
 }
 
+quick_tunnel_state_root() {
+  printf '%s/neem/quick-tunnels' "${XDG_STATE_HOME:-$HOME/.local/state}"
+}
+
+start_background_quick_tunnel() {
+  local origin=$1 port=$2 root stamp log pid process_start published_at tunnel_url="" attempt
+  local -a spinner=('|' '/' '-' '\')
+  if [[ $DRY_RUN -eq 1 ]]; then
+    printf '  %shttps://example.trycloudflare.com%s\n' "$CREAM" "$RESET"
+    return
+  fi
+  root=$(quick_tunnel_state_root)
+  mkdir -p "$root"
+  stamp="$(date +%Y%m%d-%H%M%S)-$$"
+  log="$root/$stamp.log"
+  nohup cloudflared tunnel --url "$origin" >"$log" 2>&1 </dev/null &
+  pid=$!
+  disown "$pid" 2>/dev/null || true
+  [[ -t 1 ]] || printf '  Creating Quick Tunnel...\n'
+  for ((attempt=0; attempt<45; attempt++)); do
+    if [[ -t 1 ]]; then
+      printf '\r  Creating Quick Tunnel... %s' "${spinner[attempt % ${#spinner[@]}]}"
+    fi
+    sleep 0.5
+    tunnel_url=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$log" 2>/dev/null | head -n1 || true)
+    [[ -n "$tunnel_url" ]] && break
+    kill -0 "$pid" 2>/dev/null || break
+  done
+  [[ -t 1 ]] && printf '\r%48s\r' ''
+  if [[ -z "$tunnel_url" ]]; then
+    kill "$pid" 2>/dev/null || true
+    die "Cloudflare did not return a Quick Tunnel URL. Diagnostics: $log"
+  fi
+  process_start=$(ps -p "$pid" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' || true)
+  published_at=$(date '+%Y-%m-%d %H:%M')
+  printf '%s|%s|%s|%s|%s|%s|%s\n' "$pid" "$port" "$tunnel_url" "$origin" "$log" "$process_start" "$published_at" > "$root/$pid.quick.state"
+  printf '\n  %s%s%s\n' "$CREAM" "$tunnel_url" "$RESET"
+  printf '%s  Running in the background. Return here and choose option 3 to stop it.%s\n' "$MUTED" "$RESET"
+}
+
+manage_cloudflare_tunnels() {
+  local root state pid port tunnel_url origin log process_start current_start published_at choice index process_name selected_index
+  local managed_file managed_present=0 managed_status hostname
+  local -a files=() pids=() ports=() urls=() origins=() logs=() starts=() published=() types=() statuses=() state_files=()
+  root=$(quick_tunnel_state_root)
+  mkdir -p "$root"
+  shopt -s nullglob
+  files=("$root"/*.quick.state)
+  shopt -u nullglob
+  for state in "${files[@]}"; do
+    IFS='|' read -r pid port tunnel_url origin log process_start published_at < "$state" || true
+    process_name=$(ps -p "$pid" -o comm= 2>/dev/null || true)
+    current_start=$(ps -p "$pid" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//' || true)
+    if kill -0 "$pid" 2>/dev/null && [[ "$process_name" == *cloudflared* && -n "$process_start" && "$current_start" == "$process_start" ]]; then
+      pids+=("$pid"); ports+=("$port"); urls+=("$tunnel_url"); origins+=("$origin"); logs+=("$log"); starts+=("$process_start")
+      published+=("${published_at:-unknown}"); types+=("Quick"); statuses+=("RUNNING"); state_files+=("$state")
+    else
+      rm -f "$state"
+    fi
+  done
+
+  managed_file="$root/managed.state"
+  [[ -f "$managed_file" ]] && managed_present=1
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files cloudflared.service 2>/dev/null | grep -q '^cloudflared\.service'; then managed_present=1; fi
+  if [[ "$OS" == "macos" ]] && launchctl list 2>/dev/null | grep -q 'com.cloudflare.cloudflared'; then managed_present=1; fi
+  if ((managed_present)); then
+    if [[ ! -f "$managed_file" ]]; then
+      warn "This managed service predates NEEM tunnel tracking, so its hostname and port are not stored locally."
+      if confirm "Add its display details now?"; then
+        while true; do
+          read -r -p "Local application port used by this tunnel: " port
+          valid_port "$port" && break
+          warn "Port must be between 1 and 65535. Please try again."
+        done
+        while true; do
+          read -r -p "Public hostname (for example app.example.com): " hostname
+          valid_domain "$hostname" && break
+          warn "That hostname is invalid. Please try again."
+        done
+        while true; do
+          read -r -p "Published date/time (for example 2026-08-09 22:35, or Enter if unknown): " published_at
+          [[ -z "$published_at" || "$published_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}$ ]] && break
+          warn "Use YYYY-MM-DD HH:MM, or press Enter if unknown."
+        done
+        [[ -n "$published_at" ]] || published_at=unknown
+        printf '%s|%s|%s|%s|%s\n' "$hostname" "$port" "https://$hostname" "http://127.0.0.1:$port" "$published_at" > "$managed_file"
+        ok "Managed tunnel details saved."
+      fi
+    fi
+    hostname="unknown"; port="?"; tunnel_url="Configured in Cloudflare"; origin="unknown"; published_at="unknown"
+    [[ -f "$managed_file" ]] && IFS='|' read -r hostname port tunnel_url origin published_at < "$managed_file" || true
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl is-active --quiet cloudflared && managed_status=RUNNING || managed_status=STOPPED
+    elif pgrep -f 'cloudflared.*tunnel.*run' >/dev/null 2>&1; then managed_status=RUNNING
+    else managed_status=STOPPED
+    fi
+    pids+=(""); ports+=("$port"); urls+=("$tunnel_url"); origins+=("$origin"); logs+=(""); starts+=("")
+    published+=("$published_at"); types+=("Managed"); statuses+=("$managed_status"); state_files+=("$managed_file")
+  fi
+
+  if ((${#types[@]} == 0)); then info "No NEEM Cloudflare Tunnels were found."; return; fi
+  rule "CLOUDFLARE TUNNELS"
+  printf '%s  %-3s %-9s %-9s %-6s %-17s %s%s\n' "$SELECTED" '#' TYPE STATUS PORT PUBLISHED 'PUBLIC URL' "$RESET"
+  for index in "${!pids[@]}"; do
+    printf '  %-3d %-9s %-9s %-6s %-17s %s\n' "$((index + 1))" "${types[index]}" "${statuses[index]}" "${ports[index]}" "${published[index]}" "${urls[index]}"
+  done
+  read -r -p "Choose a tunnel to stop/start, A to stop all running tunnels, or Enter to return: " choice
+  [[ -n "$choice" ]] || return
+  if [[ "$choice" =~ ^[Aa]$ ]]; then
+    selected_index=-1
+  elif [[ "$choice" =~ ^[0-9]+$ ]] && ((10#$choice >= 1 && 10#$choice <= ${#pids[@]})); then
+    selected_index=$((10#$choice - 1))
+  else
+    warn "Invalid selection."
+    return
+  fi
+  if ((selected_index == -1)); then confirm "Stop all running tunnels?" || return; fi
+  for index in "${!pids[@]}"; do
+    ((selected_index == -1 || selected_index == index)) || continue
+    if [[ "${types[index]}" == "Managed" ]]; then
+      if [[ "${statuses[index]}" == "RUNNING" ]]; then
+        ((selected_index == -1)) || confirm "Stop managed tunnel ${urls[index]}?" || continue
+        if [[ "$OS" == "macos" ]]; then root_run launchctl stop com.cloudflare.cloudflared
+        else root_run systemctl stop cloudflared
+        fi
+        ok "Stopped ${urls[index]}."
+      elif ((selected_index != -1)); then
+        confirm "Start managed tunnel ${urls[index]}?" || continue
+        if [[ "$OS" == "macos" ]]; then root_run launchctl start com.cloudflare.cloudflared
+        else root_run systemctl start cloudflared
+        fi
+        ok "Started ${urls[index]}."
+      fi
+    else
+      ((selected_index == -1)) || confirm "Stop Quick Tunnel ${urls[index]}?" || continue
+      kill "${pids[index]}" 2>/dev/null || true
+      rm -f "${state_files[index]}"
+      ok "Stopped ${urls[index]}."
+    fi
+  done
+}
+
+cloudflare_tunnel_guide() {
+  local mode port origin hostname retry pasted_value="" token="" existing=0 url="https://one.dash.cloudflare.com/"
+  install_cloudflared
+  if [[ $DRY_RUN -eq 0 ]] && ! command -v cloudflared >/dev/null 2>&1; then
+    die "cloudflared was installed but is not on PATH yet. Open a new terminal and run NEEM again."
+  fi
+
+  rule "CLOUDFLARE TUNNEL"
+  printf '  %s1  Start Quick Tunnel%s     Run a temporary public URL in the background.\n' "$CREAM" "$RESET"
+  printf '  %s2  Set up managed tunnel%s  Production hostname and automatic startup.\n' "$CREAM" "$RESET"
+  printf '  %s3  View or stop tunnels%s   Manage Quick and managed tunnels.\n' "$CREAM" "$RESET"
+  if [[ $DRY_RUN -eq 1 ]]; then mode=2
+  else read -r -p "Choose 1, 2, or 3: " mode
+  fi
+  [[ "$mode" == 1 || "$mode" == 2 || "$mode" == 3 ]] || { info "Cloudflare Tunnel setup cancelled."; return; }
+  if [[ "$mode" == 3 ]]; then manage_cloudflare_tunnels; return; fi
+
+  port=""
+  while true; do
+    [[ -n "$port" ]] || read -r -p "Local application port (for example 3000): " port
+    if ! valid_port "$port"; then
+      warn "Port must be between 1 and 65535. Please try again."
+      port=""
+      continue
+    fi
+    origin="http://127.0.0.1:$port"
+    [[ $DRY_RUN -eq 1 ]] && break
+    if ! command -v curl >/dev/null 2>&1 || curl -fsS --max-time 3 "$origin/" >/dev/null 2>&1; then
+      ok "The local application answered at $origin."
+      break
+    fi
+    warn "Nothing answered over HTTP at $origin."
+    read -r -p "Press Enter or R to retry, type a new port, A to continue anyway, or C to cancel: " retry
+    case "$retry" in
+      A|a) break ;;
+      C|c) info "Cloudflare Tunnel setup cancelled."; return ;;
+      ""|R|r) ;;
+      *) port=$retry ;;
+    esac
+  done
+
+  if [[ "$mode" == 1 ]]; then
+    start_background_quick_tunnel "$origin" "$port"
+    return
+  fi
+
+  while true; do
+    read -r -p "Public hostname to use (for example app.example.com): " hostname
+    valid_domain "$hostname" && break
+    warn "That hostname is invalid. Please try this step again."
+  done
+
+  printf '  %sIn the Cloudflare dashboard:%s\n' "$CREAM" "$RESET"
+  printf '%s  1. Open Networking > Tunnels and create a Cloudflared tunnel.%s\n' "$MUTED" "$RESET"
+  printf '%s  2. Select this machine\x27s operating system.%s\n' "$MUTED" "$RESET"
+  printf '%s  3. Copy the complete cloudflared service install command.%s\n' "$MUTED" "$RESET"
+  printf '%s  One cloudflared service can serve several published routes on this machine.%s\n' "$MUTED" "$RESET"
+  if [[ $DRY_RUN -eq 0 ]] && confirm "Open the Cloudflare Tunnels dashboard now?"; then
+    if [[ "$OS" == "macos" ]]; then run open "$url"
+    elif command -v xdg-open >/dev/null 2>&1; then run xdg-open "$url"
+    else info "Open $url in a browser."
+    fi
+  else
+    info "Dashboard: $url"
+  fi
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    root_run_secret "dry-run-placeholder"
+    info "Dry run complete. No token was requested and no service was installed."
+    return
+  fi
+
+  while [[ -z "$token" ]]; do
+    info "Press Ctrl+Shift+V (or right-click) to paste, then press Enter. The value stays hidden."
+    read_hidden_paste_input "Paste the token or full cloudflared install command:"
+    pasted_value=$HIDDEN_PASTE_VALUE
+    HIDDEN_PASTE_VALUE=""
+    [[ -n "$pasted_value" ]] && ok "Paste received. Validating token..."
+    token=$(printf '%s' "$pasted_value" | grep -Eo 'eyJ[A-Za-z0-9_-]{20,}' | head -n1 || true)
+    pasted_value=""
+    if [[ -z "$token" ]] || ! valid_cloudflare_tunnel_token "$token"; then
+      token=""
+      warn "No valid Cloudflare Tunnel token was found. Copy a fresh install command and retry this step."
+    fi
+  done
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files cloudflared.service 2>/dev/null | grep -q '^cloudflared\.service'; then
+    existing=1
+  elif [[ "$OS" == "macos" ]] && launchctl list 2>/dev/null | grep -q 'com.cloudflare.cloudflared'; then
+    existing=1
+  fi
+  if ((existing)); then
+    warn "A cloudflared service is already installed on this machine."
+    if ! confirm "Replace it with this tunnel token?"; then token=""; return; fi
+    root_run cloudflared service uninstall
+  fi
+  root_run_secret "$token"
+  token=""
+
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet cloudflared; then ok "Cloudflare Tunnel is installed and running as a system service."
+    else warn "The service was installed but is not active. Check: sudo systemctl status cloudflared"
+    fi
+  else
+    ok "Cloudflare Tunnel service installation finished."
+  fi
+  rule "ADD THE PUBLIC HOSTNAME"
+  printf '  %sReturn to the tunnel in the Cloudflare dashboard, then:%s\n' "$CREAM" "$RESET"
+  printf '%s  1. Continue to Routes and choose Add route > Published application.%s\n' "$MUTED" "$RESET"
+  printf '%s  2. Set Hostname to %s.%s\n' "$MUTED" "$hostname" "$RESET"
+  printf '%s  3. Set Service URL to %s.%s\n' "$MUTED" "$origin" "$RESET"
+  printf '%s  4. Save the route.%s\n' "$MUTED" "$RESET"
+  if confirm "Open the Cloudflare dashboard again?"; then
+    if [[ "$OS" == "macos" ]]; then run open "$url"
+    elif command -v xdg-open >/dev/null 2>&1; then run xdg-open "$url"
+    else info "Open $url in a browser."
+    fi
+  fi
+  read -r -p "Press Enter after the published application route is saved..." _
+  mkdir -p "$(quick_tunnel_state_root)"
+  printf '%s|%s|%s|%s|%s\n' "$hostname" "$port" "https://$hostname" "$origin" "$(date '+%Y-%m-%d %H:%M')" > "$(quick_tunnel_state_root)/managed.state"
+  ok "Cloudflare Tunnel configuration finished."
+  printf '  %shttps://%s%s\n' "$CREAM" "$hostname" "$RESET"
+  info "Cloudflare may need a short time before a newly created hostname becomes reachable."
+}
+
 health_check() {
   clear 2>/dev/null || true
   show_brand
-  local item cmd path cols max_path keep ready=0 total=8
+  local item cmd path cols max_path keep ready=0 total=9
   cols=$(tput cols 2>/dev/null || printf '100')
   max_path=$((cols - 38))
   ((max_path < 24)) && max_path=24
-  for item in "Node.js:node" "npm:npm" "PM2:pm2" "MySQL:mysql" "Nginx:nginx" "Micro:micro" "Glances:glances" "Certbot:certbot"; do
+  for item in "Node.js:node" "npm:npm" "PM2:pm2" "MySQL:mysql" "Nginx:nginx" "Micro:micro" "Glances:glances" "Certbot:certbot" "Cloudflare:cloudflared"; do
     cmd=${item#*:}
     command -v "$cmd" >/dev/null 2>&1 && ready=$((ready + 1))
   done
   rule "STACK HEALTH"
   printf '%s  %d of %d components ready%s\n' "$CREAM" "$ready" "$total" "$RESET"
   printf '%s  %-10s %-19s %s%s\n' "$SELECTED" "STATE" "COMPONENT" "LOCATION" "$RESET"
-  for item in "Node.js:node" "npm:npm" "PM2:pm2" "MySQL:mysql" "Nginx:nginx" "Micro:micro" "Glances:glances" "Certbot:certbot"; do
+  for item in "Node.js:node" "npm:npm" "PM2:pm2" "MySQL:mysql" "Nginx:nginx" "Micro:micro" "Glances:glances" "Certbot:certbot" "Cloudflare:cloudflared"; do
     cmd=${item#*:}
     if command -v "$cmd" >/dev/null 2>&1; then
       path=$(command -v "$cmd")
@@ -763,9 +1131,9 @@ health_check() {
   fi
 }
 
-MENU_IDS=(install remove complete startup domain ssl health creator exit)
-MENU_LABELS=("Install components" "Remove components" "Install complete stack" "Configure PM2 startup" "Connect a domain" "Enable HTTPS" "Inspect stack health" "Creator and support" "Exit NEEM")
-MENU_HINTS=("Choose one or several tools for this machine." "Select installed tools you no longer need." "Install Node.js, PM2, MySQL, Nginx and utilities." "Restore your Node.js apps after a restart." "Route a hostname through Nginx to a PM2 app." "Request and renew a free TLS certificate." "See what is installed and validate Nginx." "View Mohamed Aiman's links and ASCII portrait." "Return to your terminal.")
+MENU_IDS=(install remove complete startup domain ssl tunnel health creator exit)
+MENU_LABELS=("Install components" "Remove components" "Install complete stack" "Configure PM2 startup" "Connect a domain" "Enable HTTPS" "Configure Cloudflare Tunnel" "Inspect stack health" "Creator and support" "Exit NEEM")
+MENU_HINTS=("Choose one or several tools for this machine." "Select installed tools you no longer need." "Install Node.js, PM2, MySQL, Nginx and utilities." "Restore your Node.js apps after a restart." "Route a hostname through Nginx to a PM2 app." "Request and renew a free TLS certificate." "Publish a local app without opening inbound ports." "See what is installed and validate Nginx." "View Mohamed Aiman's links and ASCII portrait." "Return to your terminal.")
 MAIN_ACTION=""
 
 select_main_action() {
@@ -806,7 +1174,7 @@ select_main_action() {
     elif [[ "$key" == "0" ]]; then
       MAIN_ACTION=exit
       return
-    elif [[ "$key" =~ ^[1-8]$ ]]; then
+    elif [[ "$key" =~ ^[1-9]$ ]]; then
       shortcut=$((10#$key - 1))
       MAIN_ACTION=${MENU_IDS[shortcut]}
       return
@@ -826,6 +1194,7 @@ main_menu() {
       startup) pm2_startup; pause ;;
       domain) configure_domain; pause ;;
       ssl) enable_ssl; pause ;;
+      tunnel) cloudflare_tunnel_guide; pause ;;
       health) health_check; pause ;;
       creator) show_creator ;;
       exit) printf 'Goodbye.\n'; return ;;
@@ -848,6 +1217,7 @@ Interactive picker:
   Space    Tick or untick a component
   A        Tick or untick all
   Enter    Continue with the selection
+  1-9      Main-menu shortcuts
 EOF
 }
 

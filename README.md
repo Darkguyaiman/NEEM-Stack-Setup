@@ -12,6 +12,7 @@ An interactive terminal setup assistant for a Node.js server stack:
 - Micro terminal editor
 - Glances system monitor
 - Guided domain and HTTPS setup
+- Guided Cloudflare Tunnel setup for temporary previews or production hostnames
 - MySQL Workbench on Windows
 
 It supports Linux, macOS, and Windows with native scripts. Node.js is one of the
@@ -27,6 +28,7 @@ components NEEM can install, but it is not required to launch the setup tool.
 | Configure PM2 startup | Helps restore managed Node.js applications after a restart. |
 | Connect a domain | Creates and validates an Nginx reverse proxy for a selected PM2 application. |
 | Enable HTTPS | Uses Certbot on Linux/macOS or win-acme on Windows. |
+| Configure Cloudflare Tunnel | Installs `cloudflared`, starts temporary Quick Tunnels, or guides a production tunnel service setup. |
 | Inspect stack health | Shows component paths, Nginx status, and a compact PM2 application list. |
 | Creator and support | Shows the creator portrait, contact links, and support links in a responsive layout. |
 
@@ -42,6 +44,7 @@ components NEEM can install, but it is not required to launch the setup tool.
 | Micro editor | Yes | Yes |
 | Glances monitor | Yes | Yes |
 | SSL client | win-acme | Certbot |
+| Cloudflare Tunnel | Yes | Yes |
 
 ## Terminal theme
 
@@ -178,6 +181,51 @@ and is included in the complete Windows stack.
 NEEM checks the local app, DNS, and Nginx syntax before reloading the server. It
 backs up an existing managed site file before replacing it.
 
+## Guided Cloudflare Tunnel
+
+Choose **Configure Cloudflare Tunnel** when the application already responds on
+a local port. NEEM installs `cloudflared` when needed and offers two paths:
+
+- **Quick tunnel** creates a temporary random `trycloudflare.com` URL without an
+  account. NEEM runs it quietly in the background, prints the public URL, and
+  lets you exit while the tunnel stays available.
+- **Managed tunnel** walks through creating a tunnel and published application
+  route in the Cloudflare dashboard, asks for the local application port, then
+  installs the connector as a startup service using the tunnel token.
+
+For a managed tunnel, the dashboard route's service URL should match the address
+NEEM displays, such as `http://127.0.0.1:3000`. The domain must already be using
+Cloudflare DNS. The connector makes outbound connections, so the application can
+remain bound to localhost and inbound ports do not need to be opened for the
+tunnel itself.
+
+NEEM asks for the intended public hostname, such as `app.example.com`, before
+installing the connector. After installation it returns to that exact hostname
+and service URL, reopens the dashboard if requested, and waits until the user has
+saved the published application route before finishing.
+
+NEEM accepts either the raw `eyJ...` tunnel token or the complete install command
+copied from Cloudflare. The prompt supports terminal paste shortcuts such as
+`Ctrl+Shift+V`, displays a capped `************` input mask, extracts the token
+through hidden input, and never prints
+it in the command preview. NEEM validates the credential before replacing an
+existing connector service and keeps invalid input on the paste step. Treat the
+token as a secret: anyone who has it can run that tunnel. Add
+or change public hostnames later in **Networking > Tunnels** in the Cloudflare
+dashboard. Only one `cloudflared` service can be installed per machine, but that
+one tunnel can contain several published application routes.
+
+To review or control tunnels, return to **Configure Cloudflare Tunnel** and
+choose **View or stop tunnels**. NEEM shows Quick and managed tunnels together
+with their service state, local port, public URL, and publication time. Quick
+Tunnels can be stopped, while a managed tunnel service can be stopped and
+started again. NEEM verifies tracked processes so unrelated `cloudflared`
+processes are not stopped accidentally. Tunnel diagnostic logs and state are stored under
+`%LOCALAPPDATA%\NEEM\quick-tunnels` on Windows or
+`${XDG_STATE_HOME:-~/.local/state}/neem/quick-tunnels` on Linux and macOS.
+If NEEM finds a managed service created before tunnel tracking was added, it
+offers a one-time metadata import for the hostname, port, and publication time.
+
 ## Command-line options
 
 ```text
@@ -199,6 +247,7 @@ backs up an existing managed site file before replacing it.
 - Creates `/var/www/letsencrypt` on Linux/macOS for ACME challenges.
 - Requests certificates only after explicit confirmation.
 - Registers certificate renewal using Certbot or win-acme.
+- Optionally installs `cloudflared` and registers a managed tunnel as a service.
 
 MySQL package names vary by distribution. On Arch Linux, the distribution's
 MySQL-compatible MariaDB package is used. Always run `mysql_secure_installation`
@@ -211,6 +260,7 @@ and create a dedicated, least-privilege database user for each application.
 - Keep the application bound to `127.0.0.1`; expose it through Nginx.
 - Do not run Node.js applications as root.
 - The scripts never collect database passwords or place secrets in Nginx files.
+- Tunnel tokens are accepted through hidden input and redacted from command output.
 - Use `--dry-run` / `-DryRun` to review installation commands first.
 
 ## Troubleshooting
@@ -223,6 +273,7 @@ pm2 logs <app-name>
 curl http://127.0.0.1:<port>
 sudo nginx -t
 sudo certbot renew --dry-run
+sudo systemctl status cloudflared
 ```
 
 On Windows, reopen PowerShell after installing a component if its executable is

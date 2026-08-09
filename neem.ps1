@@ -224,6 +224,16 @@ function Invoke-Step {
     }
 }
 
+function Invoke-SecretStep {
+    param([Parameter(Mandatory)][scriptblock]$Action, [Parameter(Mandatory)][string]$Display)
+    Write-Theme -Text "> $Display" -Role Accent
+    if (-not $DryRun) {
+        $global:LASTEXITCODE = 0
+        & $Action
+        if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE`: $Display" }
+    }
+}
+
 function Set-Utf8NoBom([string]$Path, [string]$Value) {
     $encoding = [Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText($Path, $Value, $encoding)
@@ -232,6 +242,59 @@ function Set-Utf8NoBom([string]$Path, [string]$Value) {
 function Confirm-Action([string]$Prompt) {
     if ($DryRun) { return $true }
     return (Read-Host "$Prompt [y/N]") -match '^[Yy]$'
+}
+
+function Read-HiddenPasteInput {
+    param([Parameter(Mandatory)][string]$Prompt)
+    Write-Host "$Prompt " -NoNewline
+    $secure = [Security.SecureString]::new()
+    $visibleStars = 0
+    $maximumStars = 12
+    try {
+        while ($true) {
+            $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+            if ($key.VirtualKeyCode -eq 13) { Write-Host ''; return $secure }
+            if ($key.VirtualKeyCode -eq 27) { Write-Host ''; return [Security.SecureString]::new() }
+            if ($key.VirtualKeyCode -eq 8) {
+                if ($secure.Length -gt 0) {
+                    if ($secure.Length -le $maximumStars -and $visibleStars -gt 0) {
+                        Write-Host "`b `b" -NoNewline
+                        $visibleStars--
+                    }
+                    $secure.RemoveAt($secure.Length - 1)
+                }
+                continue
+            }
+            if ($key.Character -and [int]$key.Character -ne 0) {
+                $secure.AppendChar($key.Character)
+                if ($visibleStars -lt $maximumStars) {
+                    Write-Host '*' -NoNewline
+                    $visibleStars++
+                }
+            }
+        }
+    } catch {
+        Write-Host ''
+        return Read-Host 'Paste the value and press Enter (input remains hidden)' -AsSecureString
+    }
+}
+
+function Test-CloudflareTunnelToken {
+    param([Parameter(Mandatory)][string]$Token)
+    if ($Token -notmatch '^eyJ[A-Za-z0-9_-]{20,}$') { return $false }
+    try {
+        $base64 = $Token.Replace('-', '+').Replace('_', '/')
+        switch ($base64.Length % 4) {
+            2 { $base64 += '==' }
+            3 { $base64 += '=' }
+            1 { return $false }
+        }
+        $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($base64))
+        $credential = $json | ConvertFrom-Json
+        return [bool]($credential.a -and $credential.t -and $credential.s)
+    } catch {
+        return $false
+    }
 }
 
 function Test-Administrator {
@@ -300,6 +363,34 @@ function Install-Nginx {
         return
     }
     Install-Package -WingetId 'nginxinc.nginx' -ChocoId 'nginx' -Name 'Nginx'
+}
+
+function Install-Cloudflared {
+    if (Get-CloudflaredPath) {
+        Write-Ok 'Cloudflare Tunnel (cloudflared) is already installed.'
+        return
+    }
+    Install-Package -WingetId 'Cloudflare.cloudflared' -ChocoId 'cloudflared' -Name 'Cloudflare Tunnel'
+}
+
+function Get-CloudflaredPath {
+    $command = Get-Command cloudflared -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    $candidates = @(
+        "$env:ProgramFiles\cloudflared\cloudflared.exe",
+        "${env:ProgramFiles(x86)}\cloudflared\cloudflared.exe",
+        "$env:ProgramData\chocolatey\bin\cloudflared.exe"
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
+    }
+    $wingetRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    if (Test-Path -LiteralPath $wingetRoot) {
+        $match = Get-ChildItem -LiteralPath $wingetRoot -Filter cloudflared.exe -File -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($match) { return $match.FullName }
+    }
+    return $null
 }
 
 function Install-Micro {
@@ -384,6 +475,14 @@ function Remove-MySQL {
 }
 function Remove-MySQLWorkbench { Uninstall-Package -WingetId 'Oracle.MySQLWorkbench' -ChocoId 'mysql.workbench' -Name 'MySQL Workbench' }
 function Remove-Nginx { Uninstall-Package -WingetId 'nginxinc.nginx' -ChocoId 'nginx' -Name 'Nginx' }
+function Remove-Cloudflared {
+    $cloudflared = Get-CloudflaredPath
+    $service = Get-Service -Name cloudflared -ErrorAction SilentlyContinue
+    if ($service -and $cloudflared) {
+        Invoke-Step { & $cloudflared service uninstall } 'cloudflared service uninstall'
+    }
+    Uninstall-Package -WingetId 'Cloudflare.cloudflared' -ChocoId 'cloudflared' -Name 'Cloudflare Tunnel'
+}
 function Remove-Micro { Uninstall-Package -WingetId 'zyedidia.micro' -ChocoId 'micro' -Name 'Micro' }
 function Remove-Glances {
     $python = if (Get-Command py -ErrorAction SilentlyContinue) { 'py' } else { 'python' }
@@ -686,6 +785,310 @@ function Set-PM2Startup {
     Write-Info 'Use a Windows service wrapper or the PM2 Windows startup package approved by your organization.'
 }
 
+function Get-QuickTunnelStateRoot {
+    $root = Join-Path $env:LOCALAPPDATA 'NEEM\quick-tunnels'
+    if (-not $DryRun) { New-Item -ItemType Directory -Path $root -Force | Out-Null }
+    return $root
+}
+
+function Get-RunningQuickTunnels {
+    $root = Get-QuickTunnelStateRoot
+    if (-not (Test-Path -LiteralPath $root)) { return @() }
+    $running = foreach ($file in Get-ChildItem -LiteralPath $root -Filter '*.quick.json' -File -ErrorAction SilentlyContinue) {
+        try {
+            $state = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+            $process = Get-Process -Id ([int]$state.Pid) -ErrorAction SilentlyContinue
+            $sameStart = $process -and $state.ProcessStartTime -and
+                $process.StartTime.ToUniversalTime().Ticks -eq [long]$state.ProcessStartTime
+            if ($process -and $process.ProcessName -eq 'cloudflared' -and $sameStart) {
+                $state | Add-Member -NotePropertyName StateFile -NotePropertyValue $file.FullName -Force
+                $state
+            } else {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return @($running)
+}
+
+function Start-BackgroundQuickTunnel {
+    param([Parameter(Mandatory)][string]$Cloudflared, [Parameter(Mandatory)][string]$Origin, [Parameter(Mandatory)][int]$Port)
+    if ($DryRun) {
+        Write-Theme -Text '  https://example.trycloudflare.com' -Role Primary
+        return
+    }
+    $root = Get-QuickTunnelStateRoot
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    $stdout = Join-Path $root "$stamp.out.log"
+    $stderr = Join-Path $root "$stamp.err.log"
+    $process = Start-Process -FilePath $Cloudflared -ArgumentList @('tunnel','--url',$Origin) `
+        -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+    $url = $null
+    $spinner = @('|','/','-','\')
+    if ([Console]::IsOutputRedirected) { Write-Host '  Creating Quick Tunnel...' }
+    for ($attempt = 0; $attempt -lt 45 -and -not $url; $attempt++) {
+        if (-not [Console]::IsOutputRedirected) {
+            Write-Host ("`r  Creating Quick Tunnel... {0}" -f $spinner[$attempt % $spinner.Count]) -NoNewline
+        }
+        Start-Sleep -Milliseconds 500
+        if ($process.HasExited) { break }
+        $text = ''
+        if (Test-Path -LiteralPath $stdout) { $text += Get-Content -LiteralPath $stdout -Raw -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $stderr) { $text += Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue }
+        $match = [regex]::Match($text, 'https://[a-z0-9-]+\.trycloudflare\.com', 'IgnoreCase')
+        if ($match.Success) { $url = $match.Value }
+    }
+    if (-not [Console]::IsOutputRedirected) {
+        Write-Host ("`r" + (' ' * 48) + "`r") -NoNewline
+    }
+    if (-not $url) {
+        if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+        throw "Cloudflare did not return a Quick Tunnel URL. Diagnostics: $stderr"
+    }
+    $stateFile = Join-Path $root "$($process.Id).quick.json"
+    [pscustomobject]@{
+        Type = 'Quick'
+        Pid = $process.Id
+        ProcessStartTime = $process.StartTime.ToUniversalTime().Ticks
+        Port = $Port
+        Origin = $Origin
+        Url = $url
+        StartedAt = (Get-Date).ToString('o')
+        StdoutLog = $stdout
+        StderrLog = $stderr
+    } | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding UTF8
+    Write-Host ''
+    Write-Theme -Text "  $url" -Role Primary
+    Write-Theme -Text '  Running in the background. Return here and choose option 3 to stop it.' -Role Muted
+}
+
+function Save-ManagedTunnelState {
+    param(
+        [Parameter(Mandatory)][string]$Hostname,
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][string]$Origin,
+        [AllowNull()][AllowEmptyString()][string]$PublishedAt = '__NOW__'
+    )
+    $path = Join-Path (Get-QuickTunnelStateRoot) 'managed.json'
+    $value = [pscustomobject]@{
+        Type = 'Managed'
+        Port = $Port
+        Origin = $Origin
+        Url = "https://$Hostname"
+        PublishedAt = if ($PublishedAt -eq '__NOW__') { (Get-Date).ToString('o') } elseif ($PublishedAt) { $PublishedAt } else { $null }
+    } | ConvertTo-Json
+    Set-Utf8NoBom -Path $path -Value $value
+}
+
+function Complete-ManagedTunnelMetadata {
+    Write-Warn 'This managed service predates NEEM tunnel tracking, so its hostname and port are not stored locally.'
+    if (-not (Confirm-Action 'Add its display details now?')) { return $false }
+    do {
+        $managedPort = Read-Host 'Local application port used by this tunnel'
+        if (-not (Test-Port $managedPort)) { Write-Warn 'Port must be between 1 and 65535. Please try again.' }
+    } until (Test-Port $managedPort)
+    do {
+        $managedHostname = Read-Host 'Public hostname (for example app.example.com)'
+        if (-not (Test-Domain $managedHostname)) { Write-Warn 'That hostname is invalid. Please try again.' }
+    } until (Test-Domain $managedHostname)
+    while ($true) {
+        $publishedInput = Read-Host 'Published date/time (for example 2026-08-09 22:35, or Enter if unknown)'
+        if (-not $publishedInput) { $publishedAt = $null; break }
+        $parsedDate = [datetime]::MinValue
+        if ([datetime]::TryParse($publishedInput, [ref]$parsedDate)) {
+            $publishedAt = $parsedDate.ToString('o')
+            break
+        }
+        Write-Warn 'That date could not be understood. Please try again.'
+    }
+    Save-ManagedTunnelState -Hostname $managedHostname -Port ([int]$managedPort) `
+        -Origin "http://127.0.0.1:$managedPort" -PublishedAt $publishedAt
+    Write-Ok 'Managed tunnel details saved.'
+    return $true
+}
+
+function Get-ManagedTunnelState {
+    $service = Get-Service -Name cloudflared -ErrorAction SilentlyContinue
+    $path = Join-Path (Get-QuickTunnelStateRoot) 'managed.json'
+    if (-not $service -and -not (Test-Path -LiteralPath $path)) { return $null }
+    if (Test-Path -LiteralPath $path) {
+        try { $state = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { $state = $null }
+    }
+    if (-not $state) {
+        $state = [pscustomobject]@{ Type='Managed'; Port='?'; Origin='unknown'; Url='Configured in Cloudflare'; PublishedAt=$null }
+    }
+    $state | Add-Member -NotePropertyName Status -NotePropertyValue $(if ($service) { $service.Status.ToString().ToUpper() } else { 'MISSING' }) -Force
+    return $state
+}
+
+function Manage-CloudflareTunnels {
+    $tunnels = @()
+    foreach ($quick in @(Get-RunningQuickTunnels)) {
+        $quick | Add-Member -NotePropertyName Status -NotePropertyValue 'RUNNING' -Force
+        $tunnels += $quick
+    }
+    $managed = Get-ManagedTunnelState
+    if ($managed -and $managed.Url -eq 'Configured in Cloudflare') {
+        if (Complete-ManagedTunnelMetadata) { $managed = Get-ManagedTunnelState }
+    }
+    if ($managed) { $tunnels += $managed }
+    if (-not $tunnels.Count) { Write-Info 'No NEEM Cloudflare Tunnels were found.'; return }
+    Write-Rule 'CLOUDFLARE TUNNELS'
+    Write-Theme -Text ("  {0,-3} {1,-9} {2,-9} {3,-6} {4,-17} {5}" -f '#','TYPE','STATUS','PORT','PUBLISHED','PUBLIC URL') -Role Selected
+    for ($index = 0; $index -lt $tunnels.Count; $index++) {
+        $publishedValue = if ($tunnels[$index].Type -eq 'Quick') { $tunnels[$index].StartedAt } else { $tunnels[$index].PublishedAt }
+        $published = if ($publishedValue) { ([datetime]$publishedValue).ToLocalTime().ToString('yyyy-MM-dd HH:mm') } else { 'unknown' }
+        Write-Theme -Text ("  {0,-3} {1,-9} {2,-9} {3,-6} {4,-17} {5}" -f ($index + 1), $tunnels[$index].Type, $tunnels[$index].Status, $tunnels[$index].Port, $published, $tunnels[$index].Url) -Role Primary
+    }
+    $choice = Read-Host 'Choose a tunnel to stop/start, A to stop all running tunnels, or Enter to return'
+    if (-not $choice) { return }
+    if ($choice -match '^[Aa]$') {
+        $selected = @($tunnels | Where-Object Status -eq 'RUNNING')
+    } elseif ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $tunnels.Count) {
+        $selected = @($tunnels[[int]$choice - 1])
+    } else {
+        Write-Warn 'Invalid selection.'
+        return
+    }
+    if (-not $selected.Count) { Write-Info 'No running tunnels were selected.'; return }
+    foreach ($tunnel in $selected) {
+        if ($tunnel.Type -eq 'Managed') {
+            $service = Get-Service -Name cloudflared -ErrorAction SilentlyContinue
+            if (-not $service) { Write-Warn 'The managed cloudflared service is missing.'; continue }
+            if ($service.Status -eq 'Running') {
+                if (Confirm-Action "Stop managed tunnel $($tunnel.Url)?") { Stop-Service cloudflared; Write-Ok "Stopped $($tunnel.Url)." }
+            } else {
+                if (Confirm-Action "Start managed tunnel $($tunnel.Url)?") { Start-Service cloudflared; Write-Ok "Started $($tunnel.Url)." }
+            }
+        } else {
+            if (-not (Confirm-Action "Stop Quick Tunnel $($tunnel.Url)?")) { continue }
+            $process = Get-Process -Id ([int]$tunnel.Pid) -ErrorAction SilentlyContinue
+            $sameStart = $process -and $tunnel.ProcessStartTime -and
+                $process.StartTime.ToUniversalTime().Ticks -eq [long]$tunnel.ProcessStartTime
+            if ($process -and $process.ProcessName -eq 'cloudflared' -and $sameStart) { Stop-Process -Id $process.Id -Force }
+            Remove-Item -LiteralPath $tunnel.StateFile -Force -ErrorAction SilentlyContinue
+            Write-Ok "Stopped $($tunnel.Url)."
+        }
+    }
+}
+
+function Start-CloudflareTunnelGuide {
+    Install-Cloudflared
+    $cloudflared = Get-CloudflaredPath
+    if (-not $DryRun -and -not $cloudflared) { throw 'cloudflared was installed but its executable could not be found.' }
+
+    Write-Rule 'CLOUDFLARE TUNNEL'
+    Write-Theme -Text '  1  Start Quick Tunnel     Run a temporary public URL in the background.' -Role Primary
+    Write-Theme -Text '  2  Set up managed tunnel  Production hostname and automatic startup.' -Role Primary
+    Write-Theme -Text '  3  View or stop tunnels   Manage Quick and managed tunnels.' -Role Primary
+    $mode = if ($DryRun) { '2' } else { Read-Host 'Choose 1, 2, or 3' }
+    if ($mode -notin '1','2','3') { Write-Info 'Cloudflare Tunnel setup cancelled.'; return }
+    if ($mode -eq '3') { Manage-CloudflareTunnels; return }
+
+    $port = $null
+    while ($true) {
+        if (-not $port) { $port = Read-Host 'Local application port (for example 3000)' }
+        if (-not (Test-Port $port)) {
+            Write-Warn 'Port must be between 1 and 65535. Please try again.'
+            $port = $null
+            continue
+        }
+        $origin = "http://127.0.0.1:$port"
+        if ($DryRun) { break }
+        try {
+            Invoke-WebRequest "$origin/" -UseBasicParsing -TimeoutSec 3 | Out-Null
+            Write-Ok "The local application answered at $origin."
+            break
+        } catch {
+            Write-Warn "Nothing answered over HTTP at $origin."
+            $retry = Read-Host "Press Enter or R to retry, type a new port, A to continue anyway, or C to cancel"
+            if ($retry -match '^[Aa]$') { break }
+            if ($retry -match '^[Cc]$') { Write-Info 'Cloudflare Tunnel setup cancelled.'; return }
+            if ($retry -and $retry -notmatch '^[Rr]$') { $port = $retry }
+        }
+    }
+
+    if ($mode -eq '1') {
+        Start-BackgroundQuickTunnel -Cloudflared $cloudflared -Origin $origin -Port ([int]$port)
+        return
+    }
+
+    do {
+        $hostname = Read-Host 'Public hostname to use (for example app.example.com)'
+        if (-not (Test-Domain $hostname)) { Write-Warn 'That hostname is invalid. Please try this step again.' }
+    } until (Test-Domain $hostname)
+
+    Write-Theme -Text '  In the Cloudflare dashboard:' -Role Primary
+    Write-Theme -Text '  1. Open Networking > Tunnels and create a Cloudflared tunnel.' -Role Muted
+    Write-Theme -Text '  2. Select this machine''s operating system.' -Role Muted
+    Write-Theme -Text '  3. Copy the complete cloudflared service install command.' -Role Muted
+    Write-Theme -Text '  One cloudflared service can serve several published routes on this machine.' -Role Muted
+    if (-not $DryRun -and (Confirm-Action 'Open the Cloudflare Tunnels dashboard now?')) {
+        Start-Process 'https://one.dash.cloudflare.com/'
+    }
+
+    if ($DryRun) {
+        Invoke-SecretStep { } 'cloudflared service install <TUNNEL_TOKEN hidden>'
+        Write-Info 'Dry run complete. No token was requested and no service was installed.'
+        return
+    }
+
+    $token = $null
+    while (-not $token) {
+        Write-Info 'Press Ctrl+Shift+V (or right-click) to paste, then press Enter. The value stays hidden.'
+        $secureToken = Read-HiddenPasteInput 'Paste the token or full install command:'
+        if ($secureToken.Length -gt 0) { Write-Ok 'Paste received. Validating token...' }
+        $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+        try {
+            $pastedValue = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+            $tokenMatch = [regex]::Match($pastedValue, 'eyJ[A-Za-z0-9_-]{20,}')
+            if ($tokenMatch.Success -and (Test-CloudflareTunnelToken $tokenMatch.Value)) {
+                $token = $tokenMatch.Value
+            } else {
+                Write-Warn 'No valid Cloudflare Tunnel token was found. Copy a fresh install command and retry this step.'
+            }
+        } finally {
+            if ($pointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+            $pastedValue = $null
+            $tokenMatch = $null
+            $secureToken = $null
+        }
+    }
+    try {
+        $existing = Get-Service -Name cloudflared -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Warn 'A cloudflared service is already installed on this machine.'
+            if (-not (Confirm-Action 'Replace it with this tunnel token?')) { return }
+            Invoke-Step { & $cloudflared service uninstall } 'cloudflared service uninstall'
+        }
+        Invoke-SecretStep { & $cloudflared service install $token } 'cloudflared service install <TUNNEL_TOKEN hidden>'
+    } finally {
+        $token = $null
+    }
+
+    $service = Get-Service -Name cloudflared -ErrorAction SilentlyContinue
+    if ($service) {
+        if ($service.Status -ne 'Running') { Start-Service cloudflared; $service.Refresh() }
+        Write-Ok "Cloudflare Tunnel is installed as a Windows service ($($service.Status))."
+    } else {
+        Write-Warn 'The install command finished, but the cloudflared service was not detected.'
+    }
+    Write-Rule 'ADD THE PUBLIC HOSTNAME'
+    Write-Theme -Text '  Return to the tunnel in the Cloudflare dashboard, then:' -Role Primary
+    Write-Theme -Text '  1. Continue to Routes and choose Add route > Published application.' -Role Muted
+    Write-Theme -Text "  2. Set Hostname to $hostname." -Role Muted
+    Write-Theme -Text "  3. Set Service URL to $origin." -Role Muted
+    Write-Theme -Text '  4. Save the route.' -Role Muted
+    if (Confirm-Action 'Open the Cloudflare dashboard again?') { Start-Process 'https://one.dash.cloudflare.com/' }
+    [void](Read-Host 'Press Enter after the published application route is saved')
+    Save-ManagedTunnelState -Hostname $hostname -Port ([int]$port) -Origin $origin
+    Write-Ok 'Cloudflare Tunnel configuration finished.'
+    Write-Theme -Text "  https://$hostname" -Role Primary
+    Write-Info 'Cloudflare may need a short time before a newly created hostname becomes reachable.'
+}
+
 function Show-Health {
     Clear-Host
     Show-Brand
@@ -696,6 +1099,7 @@ function Show-Health {
         [pscustomobject]@{ Name='MySQL'; Probe='mysql' }
         [pscustomobject]@{ Name='MySQL Workbench'; Probe='workbench' }
         [pscustomobject]@{ Name='Nginx'; Probe='nginx' }
+        [pscustomobject]@{ Name='Cloudflare Tunnel'; Probe='cloudflared' }
         [pscustomobject]@{ Name='Micro'; Probe='micro' }
         [pscustomobject]@{ Name='Glances'; Probe='glances' }
         [pscustomobject]@{ Name='win-acme'; Probe='wacs' }
@@ -759,6 +1163,7 @@ function Get-ComponentCatalog {
         [pscustomobject]@{ Name='MySQL Server'; Probe='mysql'; Complete=$true; Install='Install-MySQL'; Remove='Remove-MySQL' }
         [pscustomobject]@{ Name='MySQL Workbench'; Probe='workbench'; Complete=$true; Install='Install-MySQLWorkbench'; Remove='Remove-MySQLWorkbench' }
         [pscustomobject]@{ Name='Nginx'; Probe='nginx'; Complete=$true; Install='Install-Nginx'; Remove='Remove-Nginx' }
+        [pscustomobject]@{ Name='Cloudflare Tunnel'; Probe='cloudflared'; Complete=$false; Install='Install-Cloudflared'; Remove='Remove-Cloudflared' }
         [pscustomobject]@{ Name='Micro editor'; Probe='micro'; Complete=$true; Install='Install-Micro'; Remove='Remove-Micro' }
         [pscustomobject]@{ Name='Glances monitor'; Probe='glances'; Complete=$true; Install='Install-Glances'; Remove='Remove-Glances' }
         [pscustomobject]@{ Name='win-acme SSL'; Probe='wacs'; Complete=$false; Install='Install-WinAcme'; Remove='Remove-WinAcme' }
@@ -777,6 +1182,7 @@ function Get-ComponentPath {
         return $match.FullName
     }
     if ($Item.Probe -eq 'wacs') { return Get-WacsPath }
+    if ($Item.Probe -eq 'cloudflared') { return Get-CloudflaredPath }
     $command = Get-Command $Item.Probe -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
     return $null
@@ -866,6 +1272,7 @@ function Get-MainActions {
         [pscustomobject]@{ Id='startup'; Label='Configure PM2 startup'; Hint='Restore your Node.js apps after a restart.' }
         [pscustomobject]@{ Id='domain'; Label='Connect a domain'; Hint='Route a hostname through Nginx to a PM2 app.' }
         [pscustomobject]@{ Id='ssl'; Label='Enable HTTPS'; Hint='Request and renew a free TLS certificate.' }
+        [pscustomobject]@{ Id='tunnel'; Label='Configure Cloudflare Tunnel'; Hint='Publish a local app without opening inbound ports.' }
         [pscustomobject]@{ Id='health'; Label='Inspect stack health'; Hint='See what is installed and validate Nginx.' }
         [pscustomobject]@{ Id='creator'; Label='Creator and support'; Hint='View Mohamed Aiman''s links and ASCII portrait.' }
         [pscustomobject]@{ Id='exit'; Label='Exit NEEM'; Hint='Return to your terminal.' }
@@ -902,7 +1309,7 @@ function Select-MainAction {
             13 { return $actions[$cursor].Id }
             27 { return 'exit' }
             48 { return 'exit' }
-            { $_ -ge 49 -and $_ -le 56 } { return $actions[$_ - 49].Id }
+            { $_ -ge 49 -and $_ -le 57 } { return $actions[$_ - 49].Id }
         }
         & $render
     }
@@ -919,6 +1326,7 @@ function Show-MainMenu {
                 'startup' { Set-PM2Startup }
                 'domain' { Connect-Domain }
                 'ssl' { Enable-Ssl }
+                'tunnel' { Start-CloudflareTunnelGuide }
                 'health' { Show-Health }
                 'creator' { Show-CreatorCard; $pauseAfterAction = $false }
                 'exit' { Write-Host 'Goodbye.'; return }
@@ -945,7 +1353,7 @@ Keyboard controls:
   Enter    Open the highlighted action
   Space    Tick or untick a component
   A        Tick or untick all components
-  1-8      Main-menu shortcuts
+  1-9      Main-menu shortcuts
 "@
 }
 
