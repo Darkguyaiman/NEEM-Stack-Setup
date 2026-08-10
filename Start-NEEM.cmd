@@ -5,6 +5,8 @@ title NEEM Stack Setup - Command Prompt
 if /i "%~1"=="-Help" goto run_neem
 if /i "%~1"=="-DryRun" goto run_neem
 if /i "%~1"=="-Health" goto run_neem
+if /i "%~1"=="-Update" goto run_neem
+if /i "%~1"=="--update" goto run_neem
 
 fltmc >nul 2>&1
 if errorlevel 1 (

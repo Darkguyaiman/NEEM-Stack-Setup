@@ -282,6 +282,52 @@ detect_platform() {
   esac
 }
 
+update_neem() {
+  local repository="https://github.com/Darkguyaiman/NEEM-Stack-Setup.git"
+  local archive_url="https://github.com/Darkguyaiman/NEEM-Stack-Setup/archive/refs/heads/main.zip"
+  local current latest temp_root temp_base archive source new_version
+  rule "NEEM UPDATE"
+  if [[ -d "$SCRIPT_DIR/.git" ]] && command -v git >/dev/null 2>&1; then
+    if [[ -n "$(git -C "$SCRIPT_DIR" status --porcelain)" ]]; then
+      die "Local project changes are present. Commit or stash them before running neem --update."
+    fi
+    info "Checking GitHub for updates..."
+    run git -C "$SCRIPT_DIR" fetch origin main
+    current=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
+    latest=$(git -C "$SCRIPT_DIR" rev-parse origin/main)
+    if [[ "$current" == "$latest" ]]; then
+      ok "NEEM v$VERSION is already current."
+    else
+      run git -C "$SCRIPT_DIR" merge --ff-only origin/main
+      new_version=$(tr -d '\r\n' < "$SCRIPT_DIR/VERSION")
+      ok "NEEM was updated to v$new_version."
+    fi
+  else
+    warn "This copy was downloaded without Git history."
+    confirm "Download the latest files from $repository and replace NEEM program files?" || return
+    need_command curl
+    need_command unzip
+    temp_root=$(mktemp -d)
+    archive="$temp_root/neem-main.zip"
+    info "Downloading the latest NEEM release files from GitHub..."
+    run curl --fail --location --output "$archive" "$archive_url"
+    run unzip -q "$archive" -d "$temp_root"
+    source=$(find "$temp_root" -mindepth 1 -maxdepth 1 -type d -name 'NEEM-Stack-Setup-*' | head -n1)
+    [[ -n "$source" && -r "$source/VERSION" ]] || die "The downloaded NEEM archive was not valid."
+    run cp -R "$source/." "$SCRIPT_DIR/"
+    new_version=$(tr -d '\r\n' < "$SCRIPT_DIR/VERSION")
+    temp_base=${TMPDIR:-/tmp}
+    temp_base=${temp_base%/}
+    case "$temp_root" in
+      "$temp_base"/*) rm -rf -- "$temp_root" ;;
+      *) warn "Temporary update files were retained at $temp_root." ;;
+    esac
+    ok "NEEM was updated to v$new_version."
+  fi
+  run bash "$SCRIPT_DIR/install-neem-command.sh"
+  info "Run neem again to use the updated version."
+}
+
 package_refresh() {
   case "$PKG" in
     apt) root_run apt-get update ;;
@@ -1206,11 +1252,12 @@ usage() {
   cat <<EOF
 NEEM Stack Setup v$VERSION
 
-Usage: ./neem.sh [--dry-run] [--health] [--help]
+Usage: ./neem.sh [--dry-run] [--health] [--update] [--help]
 
 Without options, launches the interactive terminal menu.
   --dry-run  Print privileged/package commands without running them
   --health   Show installed components and validate Nginx
+  --update   Download and install the latest version from GitHub
 
 Interactive picker:
   Up/Down  Move between components
@@ -1225,11 +1272,12 @@ main() {
   local action="menu"
   while (($#)); do
     case "$1" in
-      --dry-run) DRY_RUN=1 ;; --health) action="health" ;;
+      --dry-run) DRY_RUN=1 ;; --health) action="health" ;; --update) action="update" ;;
       -h|--help) usage; exit 0 ;; *) die "Unknown option: $1" ;;
     esac
     shift
   done
+  if [[ "$action" == "update" ]]; then update_neem; return; fi
   detect_platform
   if [[ "$action" == "health" ]]; then health_check; else main_menu; fi
 }

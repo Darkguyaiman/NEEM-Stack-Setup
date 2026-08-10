@@ -235,8 +235,19 @@ offers a one-time metadata import for the hostname, port, and publication time.
 
 .\neem.ps1 -DryRun
 .\neem.ps1 -Health
+.\neem.ps1 -Update
 .\neem.ps1 -Help
+
+neem --update
+neem-stack --update
 ```
+
+`neem --update` and `neem-stack --update` check the project’s GitHub `main`
+branch. A Git checkout updates only through a clean fast-forward and refuses to
+overwrite local changes. A ZIP/downloaded copy asks for confirmation before it
+downloads and replaces NEEM program files. After updating, NEEM refreshes the
+global command wrappers automatically. The installed commands always point to
+the live project folder; they do not keep a separate frozen copy of NEEM.
 
 ## What the scripts change
 

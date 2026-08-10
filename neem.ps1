@@ -13,6 +13,7 @@
 param(
     [switch]$DryRun,
     [switch]$Health,
+    [switch]$Update,
     [switch]$Help,
     [switch]$NoElevate
 )
@@ -295,6 +296,59 @@ function Test-CloudflareTunnelToken {
     } catch {
         return $false
     }
+}
+
+function Update-NEEM {
+    $repository = 'https://github.com/Darkguyaiman/NEEM-Stack-Setup.git'
+    $archiveUrl = 'https://github.com/Darkguyaiman/NEEM-Stack-Setup/archive/refs/heads/main.zip'
+    Write-Rule 'NEEM UPDATE'
+    if ((Test-Path -LiteralPath (Join-Path $script:ProjectRoot '.git')) -and
+        (Get-Command git -ErrorAction SilentlyContinue)) {
+        $changes = @(& git -C $script:ProjectRoot status --porcelain)
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the Git working tree.' }
+        if ($changes.Count) {
+            throw 'Local project changes are present. Commit or stash them before running neem --update.'
+        }
+        Write-Info 'Checking GitHub for updates...'
+        Invoke-Step { & git -C $script:ProjectRoot fetch origin main } 'git fetch origin main'
+        $current = (& git -C $script:ProjectRoot rev-parse HEAD).Trim()
+        $latest = (& git -C $script:ProjectRoot rev-parse origin/main).Trim()
+        if ($current -eq $latest) {
+            Write-Ok "NEEM v$script:Version is already current."
+        } else {
+            Invoke-Step { & git -C $script:ProjectRoot merge --ff-only origin/main } 'git merge --ff-only origin/main'
+            $newVersion = (Get-Content -LiteralPath (Join-Path $script:ProjectRoot 'VERSION') -Raw).Trim()
+            Write-Ok "NEEM was updated to v$newVersion."
+        }
+    } else {
+        Write-Warn 'This copy was downloaded without Git history.'
+        if (-not (Confirm-Action "Download the latest files from $repository and replace NEEM program files?")) { return }
+        $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("neem-update-" + [guid]::NewGuid().ToString('N'))
+        $archive = Join-Path $tempRoot 'neem-main.zip'
+        try {
+            New-Item -ItemType Directory -Path $tempRoot | Out-Null
+            Write-Info 'Downloading the latest NEEM release files from GitHub...'
+            Invoke-WebRequest -Uri $archiveUrl -OutFile $archive -UseBasicParsing
+            Expand-Archive -LiteralPath $archive -DestinationPath $tempRoot -Force
+            $source = Get-ChildItem -LiteralPath $tempRoot -Directory |
+                Where-Object Name -like 'NEEM-Stack-Setup-*' | Select-Object -First 1
+            if (-not $source -or -not (Test-Path -LiteralPath (Join-Path $source.FullName 'VERSION'))) {
+                throw 'The downloaded NEEM archive was not valid.'
+            }
+            foreach ($item in Get-ChildItem -LiteralPath $source.FullName -Force) {
+                Copy-Item -LiteralPath $item.FullName -Destination $script:ProjectRoot -Recurse -Force
+            }
+            $newVersion = (Get-Content -LiteralPath (Join-Path $script:ProjectRoot 'VERSION') -Raw).Trim()
+            Write-Ok "NEEM was updated to v$newVersion."
+        } finally {
+            if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
+        }
+    }
+    $commandInstaller = Join-Path $script:ProjectRoot 'Install-NEEM-Command.ps1'
+    if (Test-Path -LiteralPath $commandInstaller) {
+        & $commandInstaller
+    }
+    Write-Info 'Run neem again to use the updated version.'
 }
 
 function Test-Administrator {
@@ -1342,11 +1396,12 @@ function Show-Usage {
     Write-Host @"
 NEEM Stack Setup v$script:Version
 
-Usage: .\neem.ps1 [-DryRun] [-Health] [-Help]
+Usage: .\neem.ps1 [-DryRun] [-Health] [-Update] [-Help]
 
 Without options, launches the interactive terminal menu.
   -DryRun  Print package and service commands without running them
   -Health  Show installed components and validate Nginx
+  -Update  Download and install the latest version from GitHub
 
 Keyboard controls:
   Up/Down  Move through menus
@@ -1358,6 +1413,10 @@ Keyboard controls:
 }
 
 if ($Help) { Show-Usage; exit 0 }
+if ($Update) {
+    try { Update-NEEM; exit 0 }
+    catch { Write-Theme -Text "[x] $($_.Exception.Message)" -Role Accent; exit 1 }
+}
 if (-not (Test-Administrator) -and -not $NoElevate) {
     if (-not $DryRun -and -not $Health) {
         Write-Info 'Requesting administrator access...'

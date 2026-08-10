@@ -9,6 +9,8 @@ $sourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installRoot = Join-Path $env:LOCALAPPDATA 'Programs\NEEM Stack'
 $commandPath = Join-Path $installRoot 'neem-stack.cmd'
 $shortCommandPath = Join-Path $installRoot 'neem.cmd'
+$powerShellCommandPath = Join-Path $installRoot 'neem-stack.ps1'
+$shortPowerShellCommandPath = Join-Path $installRoot 'neem.ps1'
 
 New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
 $liveLauncher = Join-Path $sourceRoot 'Start-NEEM.cmd'
@@ -17,6 +19,12 @@ $wrapper = "@echo off`r`ncall `"$escapedLauncher`" %*`r`n"
 $encoding = [Text.Encoding]::Default
 [IO.File]::WriteAllText($commandPath, $wrapper, $encoding)
 [IO.File]::WriteAllText($shortCommandPath, $wrapper, $encoding)
+$liveScript = Join-Path $sourceRoot 'neem.ps1'
+$escapedScript = $liveScript.Replace("'", "''")
+$powerShellWrapper = "& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File '$escapedScript' @args`r`nexit `$LASTEXITCODE`r`n"
+$utf8 = [Text.UTF8Encoding]::new($false)
+[IO.File]::WriteAllText($powerShellCommandPath, $powerShellWrapper, $utf8)
+[IO.File]::WriteAllText($shortPowerShellCommandPath, $powerShellWrapper, $utf8)
 
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $entries = @($userPath -split ';' | Where-Object { $_ -and $_ -ne $installRoot })
