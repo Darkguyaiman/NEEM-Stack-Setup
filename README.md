@@ -18,6 +18,45 @@ An interactive terminal setup assistant for a Node.js server stack:
 It supports Linux, macOS, and Windows with native scripts. Node.js is one of the
 components NEEM can install, but it is not required to launch the setup tool.
 
+## Project structure
+
+The platform implementations are modular so individual features can be changed
+without editing one large script:
+
+```text
+windows/
+  neem.cmd              Command Prompt launcher and elevation handling
+  neem.ps1              PowerShell entry point and module loader
+  modules/              Core, packages, web, health, MySQL, components, menu
+linux/
+  neem.sh               Linux/macOS entry point and module loader
+  modules/              Core, packages, web, health, MySQL, menu
+```
+
+The root `neem.ps1`, `neem.sh`, `neem.cmd`, and `Start-NEEM.cmd` files remain
+small compatibility launchers. Existing commands, shortcuts, and command
+installations therefore continue to work. New behavior should be implemented in
+the relevant platform module rather than in a root launcher.
+
+## Testing
+
+Run the complete suite on Windows with Git for Windows installed:
+
+```powershell
+.\tests\run.ps1
+```
+
+Run the Bash behavior suite on Linux or macOS with:
+
+```bash
+bash tests/run.sh
+```
+
+The tests exercise the PowerShell modules, all CMD compatibility launchers, Bash
+module loading, command help and failure paths, validators, cross-platform backup
+path handling, module encoding, line endings, and the static project invariants.
+They avoid installation, elevation, and system-configuration operations.
+
 ## What NEEM can do
 
 | Action | Behavior |

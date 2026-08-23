@@ -1,28 +1,43 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 
-$errors = $null
-$tokens = $null
-[void][System.Management.Automation.Language.Parser]::ParseFile(
-    (Join-Path $root 'neem.ps1'),
-    [ref]$tokens,
-    [ref]$errors
-)
-if ($errors.Count) {
-    $errors | ForEach-Object { Write-Error $_.Message }
+$powerShellFiles = @(
+    (Join-Path $root 'neem.ps1')
+    (Join-Path $root 'windows\neem.ps1')
+) + @(Get-ChildItem (Join-Path $root 'windows\modules') -Filter '*.ps1' | ForEach-Object FullName)
+foreach ($powerShellFile in $powerShellFiles) {
+    $errors = $null
+    $tokens = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile(
+        $powerShellFile,
+        [ref]$tokens,
+        [ref]$errors
+    )
+    if ($errors.Count) {
+        $errors | ForEach-Object { Write-Error "$powerShellFile`: $($_.Message)" }
+    }
 }
 
-$bash = Get-Content (Join-Path $root 'neem.sh') -Raw
-$powershell = Get-Content (Join-Path $root 'neem.ps1') -Raw
+$bashFiles = @((Join-Path $root 'linux\neem.sh')) +
+    @(Get-ChildItem (Join-Path $root 'linux\modules') -Filter '*.sh' | Sort-Object Name | ForEach-Object FullName)
+$bash = ($bashFiles | ForEach-Object { Get-Content $_ -Raw }) -join "`n"
+$powershell = ($powerShellFiles | Where-Object { $_ -like '*\windows\*' } |
+    ForEach-Object { Get-Content $_ -Raw }) -join "`n"
+$rootBashLauncher = Get-Content (Join-Path $root 'neem.sh') -Raw
+$rootPowerShellLauncher = Get-Content (Join-Path $root 'neem.ps1') -Raw
 $readme = Get-Content (Join-Path $root 'README.md') -Raw
 $version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
-$windowsLauncher = Get-Content (Join-Path $root 'Start-NEEM.cmd') -Raw
+$windowsCompatibilityLauncher = Get-Content (Join-Path $root 'Start-NEEM.cmd') -Raw
+$windowsLauncher = Get-Content (Join-Path $root 'windows\neem.cmd') -Raw
 $windowsAlias = Get-Content (Join-Path $root 'neem.cmd') -Raw
 $windowsCommandInstaller = Get-Content (Join-Path $root 'Install-NEEM-Command.ps1') -Raw
 $unixCommandInstaller = Get-Content (Join-Path $root 'install-neem-command.sh') -Raw
 
 $checks = [ordered]@{
     'Bash has strict mode' = $bash.Contains('set -Eeuo pipefail')
+    'Root launchers preserve backwards compatibility' = $rootBashLauncher.Contains('linux/neem.sh') -and $rootPowerShellLauncher.Contains('windows\neem.ps1') -and $windowsCompatibilityLauncher.Contains('windows\neem.cmd')
+    'Platform scripts load maintainable modules' = $bash.Contains('source "$PLATFORM_DIR/modules/$module.sh"') -and $powershell.Contains("'Components.ps1'") -and $powershell.Contains("'MySQL.ps1'")
+    'README documents the modular platform layout' = $readme.Contains('## Project structure') -and $readme.Contains('windows/') -and $readme.Contains('linux/')
     'Bash validates Nginx before reload' = $bash.Contains('nginx -t')
     'Bash supports dry run' = $bash.Contains('--dry-run')
     'Bash supports GitHub updates' = $bash.Contains('update_neem()') -and $bash.Contains('--update')
@@ -36,7 +51,7 @@ $checks = [ordered]@{
     'Bash supports component removal' = $bash.Contains('component_workflow Remove')
     'Both terminals show creator details' = $bash.Contains('mohamedaiman103@gmail.com') -and $powershell.Contains('mohamedaiman103@gmail.com')
     'README includes support links' = $readme.Contains('ko-fi.com/darkguyaiman') -and $readme.Contains('paypal.me/thedarkguyaiman')
-    'Windows has a double-click launcher' = $windowsLauncher.Contains('neem.ps1')
+    'Windows has a double-click launcher' = $windowsCompatibilityLauncher.Contains('windows\neem.cmd') -and $windowsLauncher.Contains('neem.ps1')
     'CMD launcher elevates Command Prompt' = $windowsLauncher.Contains('$env:ComSpec') -and $windowsLauncher.Contains("'/k'")
     'CMD launcher suppresses PowerShell relaunch' = $windowsLauncher.Contains('-NoElevate')
     'CMD can launch local neem alias' = $windowsAlias.Contains('Start-NEEM.cmd')
