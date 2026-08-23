@@ -63,7 +63,7 @@ The main command palette and component picker are fully keyboard-operated:
 - **A** toggles every component.
 - **Enter** reviews and confirms a component batch.
 - **Escape** cancels without making changes.
-- **1–8** remain available as quick main-menu shortcuts.
+- **1–9** remain available as quick main-menu shortcuts.
 
 For example, you can tick MySQL, PM2, and Nginx and install all three in one
 run. Removal uses the same picker and always asks for confirmation. Database
@@ -76,6 +76,69 @@ the missing set first and leaves existing tools untouched.
 
 The health screen uses a compact NEEM-native status table and a concise PM2
 application list instead of PM2's full-width default box table.
+
+## MySQL database backups
+
+Choose **Back up a MySQL database** from the menu, or run `neem --backup` on
+Linux/macOS and `.\neem.ps1 -Backup` on Windows. NEEM connects with MySQL's
+hidden password prompt, lists only user databases, and lets you select one. You
+can include all CREATE statements (recommended for a complete restore) or make
+a data-only dump for an existing schema.
+
+The backup and database-user workflows are divided into clearly labelled steps.
+Database lists use an arrow-key picker: press **Up / Down** to move, **Enter** to
+select, or **Escape** to cancel without making changes. Long lists scroll while
+keeping the selected database visible.
+
+The dump uses `utf8mb4`, a consistent transaction, hexadecimal binary values,
+complete column lists, and omits source-server metadata that commonly causes
+cross-machine restore errors. Routines, events, and triggers are included with
+CREATE statements. NEEM writes to a temporary `.partial` file, checks that the
+result is non-empty valid UTF-8, and only then publishes the `.sql` file. Before
+creating it, NEEM prompts for a destination directory. Press **Enter** to use
+`~/neem-backups` on Linux/macOS or `Documents\NEEM Backups` on Windows. The
+prompt accepts paths with spaces, `~`, native paths, and Windows or Unix-style
+separators. Windows drive paths are translated by the Unix launcher when it is
+running in WSL or Git Bash. The result screen prints ready-to-run `scp` commands
+for Windows, macOS, and Linux clients.
+
+The consistent snapshot guarantee applies to transactional tables such as
+InnoDB. Restore into a compatible MySQL/MariaDB version; vendor-specific SQL
+features may still require the same or a newer server version.
+
+## MySQL database users
+
+Choose **Manage MySQL users** to create an account for one database, create an
+account for all databases, or view the accounts already present on the server.
+The account list shows both `User` and `Host`, because MySQL uses that pair to
+identify each account. The one-database workflow lists the available user
+databases and grants access to exactly one selection. Both creation workflows
+perform `CREATE USER`, `GRANT ALL PRIVILEGES`, and `FLUSH PRIVILEGES` together.
+
+The **all databases** option grants `ALL PRIVILEGES ON *.*`. This is server-wide
+access covering system schemas plus every current and future database, so NEEM
+shows a dedicated warning and confirmation before collecting account details.
+Use it only for accounts that genuinely need that level of control.
+
+Direct commands continue to create a user for one database: run
+`neem --create-db-user` on Linux/macOS or
+`.\neem.ps1 -CreateDatabaseUser` on Windows.
+
+The other user-management actions also have direct commands:
+
+```text
+neem --create-global-db-user
+neem --list-db-users
+
+.\neem.ps1 -CreateGlobalDatabaseUser
+.\neem.ps1 -ListDatabaseUsers
+```
+
+The new password is entered twice through hidden input and is never shown in a
+command preview. Usernames use a portable 32-character-safe format. The account
+defaults to connections from `localhost`; choosing `%` is supported but clearly
+warned because it permits authentication from any network address that can
+reach MySQL.
 
 ## Quick start
 
@@ -231,10 +294,18 @@ offers a one-time metadata import for the hostname, port, and publication time.
 ```text
 ./neem.sh --dry-run       # preview package/privileged commands
 ./neem.sh --health        # component and Nginx status
+./neem.sh --backup        # create a portable MySQL dump
+./neem.sh --create-db-user # create a database-scoped MySQL user
+./neem.sh --create-global-db-user # create a server-wide MySQL user
+./neem.sh --list-db-users  # list MySQL users and allowed hosts
 ./neem.sh --help
 
 .\neem.ps1 -DryRun
 .\neem.ps1 -Health
+.\neem.ps1 -Backup
+.\neem.ps1 -CreateDatabaseUser
+.\neem.ps1 -CreateGlobalDatabaseUser
+.\neem.ps1 -ListDatabaseUsers
 .\neem.ps1 -Update
 .\neem.ps1 -Help
 
