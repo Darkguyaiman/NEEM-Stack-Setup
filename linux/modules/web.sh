@@ -1,4 +1,44 @@
 # Nginx, domains, TLS, PM2 startup, and Cloudflare Tunnel workflows.
+rewrite_nginx_webroot() {
+  sed -E 's#^([[:space:]]*root[[:space:]]+)/usr/share/nginx/html([[:space:]]*;)#\1/var/www/html\2#'
+}
+
+configure_nginx_webroot() (
+  [[ "$OS" != macos ]] || return 0
+  local stage config backup stamp index
+  local -a changed=() backups=()
+  if ((DRY_RUN)); then
+    info 'Would prepare /var/www/html and update the packaged Nginx default site.'
+    return
+  fi
+  stage=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$stage"' EXIT
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  root_run install -d -m 0755 /var/www/html || return 1
+  if [[ -d /usr/share/nginx/html ]]; then
+    root_run cp -Rn /usr/share/nginx/html/. /var/www/html/ || return 1
+  fi
+  for config in /etc/nginx/conf.d/default.conf /etc/nginx/sites-available/default /etc/nginx/nginx.conf; do
+    [[ -f "$config" ]] || continue
+    rewrite_nginx_webroot < "$config" > "$stage/config"
+    cmp -s "$config" "$stage/config" && continue
+    backup="$config.neem-webroot-backup-$stamp"
+    root_run cp -p "$config" "$backup" || return 1
+    changed+=("$config")
+    backups+=("$backup")
+    if ! root_run cp "$stage/config" "$config"; then
+      for index in "${!changed[@]}"; do root_run cp -p "${backups[index]}" "${changed[index]}"; done
+      return 1
+    fi
+  done
+  if ! root_run nginx -t; then
+    for index in "${!changed[@]}"; do root_run cp -p "${backups[index]}" "${changed[index]}"; done
+    warn 'Nginx validation failed; default-site changes were restored.'
+    return 1
+  fi
+  info 'Default website files: /var/www/html. Custom website roots are retained.'
+)
+
 valid_domain() {
   [[ "$1" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
 }

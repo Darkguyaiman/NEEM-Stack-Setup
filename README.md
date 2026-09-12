@@ -473,6 +473,12 @@ MIT
 
 ## Production release selection
 
+On Linux, Nginx setup creates `/var/www/html` and migrates the packaged
+`/usr/share/nginx/html` default root there. Existing files in `/var/www/html`
+and custom website roots are preserved. Changed configs receive timestamped
+backups and are restored if `nginx -t` fails. To apply this to an existing
+installation, run `neem --setup-nginx`. New installations do this automatically.
+
 Batch removal processes Node.js last so PM2 can still use npm to uninstall.
 If Node/npm was already removed, PM2 removal restores the runtime automatically
 for cleanup and removes that temporary runtime afterward when Node was absent.

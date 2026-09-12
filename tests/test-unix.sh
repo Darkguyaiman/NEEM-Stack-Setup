@@ -333,4 +333,10 @@ pass 'MySQL core leftovers are removed and remaining binaries prevent false succ
 )
 pass 'database detection verifies the server executable still exists'
 
+webroot_result=$(printf '%s\n' '    root /usr/share/nginx/html;' '# root /usr/share/nginx/html;' '    root /srv/custom;' | rewrite_nginx_webroot)
+assert_contains "$webroot_result" '    root /var/www/html;' 'packaged Nginx webroot changes to /var/www/html'
+assert_contains "$webroot_result" '# root /usr/share/nginx/html;' 'commented Nginx directives remain unchanged'
+assert_contains "$webroot_result" '    root /srv/custom;' 'custom Nginx webroots remain unchanged'
+assert_equal "$webroot_result" "$(printf '%s\n' "$webroot_result" | rewrite_nginx_webroot)" 'webroot migration is repeatable'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"

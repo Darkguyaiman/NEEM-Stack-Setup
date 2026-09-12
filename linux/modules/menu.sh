@@ -82,6 +82,7 @@ Usage: ./neem.sh [--dry-run] [--health] [--backup] [--create-db-user]
 Without options, launches the interactive terminal menu.
   --dry-run  Print privileged/package commands without running them
   --health   Show installed components and validate Nginx
+  --setup-nginx  Install/configure Nginx; use /var/www/html for Linux default sites
   --backup   Create a portable MySQL database dump
   --create-db-user  Create a user for one MySQL database
   --create-global-db-user  Create a user with access to all databases

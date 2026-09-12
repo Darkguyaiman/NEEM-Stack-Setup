@@ -4,7 +4,7 @@ package_step() {
   shift
   if ((DRY_RUN)); then run "$@"; return; fi
   # Keep privilege prompts on the terminal before capturing routine output.
-  if [[ "$1" == root_run && ${EUID:-$(id -u)} -ne 0 ]]; then
+  if [[ ( "$1" == root_run || "$1" == configure_nginx_webroot ) && ${EUID:-$(id -u)} -ne 0 ]]; then
     sudo -v || return 1
   fi
   log=$(mktemp "${TMPDIR:-/tmp}/neem-step.XXXXXX") || return 1
@@ -334,11 +334,17 @@ install_mysql() {
 install_nginx() {
   if command -v nginx >/dev/null 2>&1; then
     warn "Existing Nginx retained; installation does not check or apply security updates."
+    if [[ "$OS" != macos ]]; then package_step 'Preparing /var/www/html' configure_nginx_webroot || return 1; fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
+      package_step 'Reloading Nginx' root_run nginx -s reload || return 1
+    fi
     return
   fi
   info "Installing Nginx..."
   install_production_package nginx nginx
+  if [[ "$OS" != macos ]]; then package_step 'Preparing /var/www/html' configure_nginx_webroot || return 1; fi
   enable_service nginx
+  if [[ "$OS" != macos ]]; then package_step 'Reloading Nginx' root_run nginx -s reload; fi
   ok "Nginx installation finished."
 }
 

@@ -62,6 +62,7 @@ main() {
     case "$1" in
       --dry-run) DRY_RUN=1 ;; --health) action="health" ;; --backup) action="backup" ;;
       --create-db-user) action="dbuser" ;; --update) action="update" ;;
+      --setup-nginx) action="nginx" ;;
       --create-global-db-user) action="dbuserall" ;; --list-db-users) action="dbuserlist" ;;
       -h|--help) usage; exit 0 ;; *) die "Unknown option: $1" ;;
     esac
@@ -74,6 +75,9 @@ main() {
   if [[ "$action" == "dbuserlist" ]]; then mysql_list_users; return; fi
   detect_platform
   if [[ "$action" == "health" ]]; then health_check
+  elif [[ "$action" == "nginx" ]]; then
+    if ! command -v nginx >/dev/null 2>&1; then package_refresh; fi
+    install_nginx
   else main_menu
   fi
 }
