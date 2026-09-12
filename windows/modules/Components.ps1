@@ -94,6 +94,10 @@ function Invoke-ComponentWorkflow {
     param([ValidateSet('Install','Remove')][string]$Mode)
     $items = @(Select-Components -Verb $Mode)
     if (-not $items.Count) { return }
+    if ($Mode -eq 'Remove') {
+        $items = @($items | Where-Object { $_.Remove -ne 'Remove-Node' }) +
+            @($items | Where-Object { $_.Remove -eq 'Remove-Node' })
+    }
     Write-Host ''
     Write-Rule "$($Mode.ToUpper()) PLAN"
     $items | ForEach-Object { Write-Theme -Text "  * $($_.Name)" -Role Primary }

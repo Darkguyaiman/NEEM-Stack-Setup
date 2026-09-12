@@ -102,4 +102,14 @@ function Get-ProductionVersion { throw 'Dry run must not fetch metadata' }
 Install-ProductionPackage node OpenJS.NodeJS.LTS nodejs-lts
 Assert-True $true 'release selection dry run works without network access'
 
+& {
+    $script:RemovalCalls = @()
+    function Select-Components { @(Get-ComponentCatalog | Where-Object { $_.Probe -in @('node','pm2') }) }
+    function Confirm-Action { return $true }
+    function Remove-Node { $script:RemovalCalls += 'node' }
+    function Remove-PM2 { $script:RemovalCalls += 'pm2' }
+    Invoke-ComponentWorkflow -Mode Remove
+    Assert-Equal 'pm2,node' ($script:RemovalCalls -join ',') 'Windows removes PM2 before its Node runtime'
+}
+
 Write-Host "`nWindows PowerShell suite passed ($script:TestCount assertions)." -ForegroundColor Green

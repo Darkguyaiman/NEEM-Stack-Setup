@@ -408,13 +408,24 @@ remove_node() {
     brew) local formula; formula=$(installed_brew_formula node) || return; package_remove "$formula" ;;
     *) package_remove nodejs npm ;;
   esac
+  hash -r
 }
 
 remove_pm2() {
-  need_command npm
+  local restore_node=0 node_path npm_path
+  hash -r
+  node_path=$(command -v node || true)
+  npm_path=$(command -v npm || true)
+  if [[ ! -x "$node_path" || ! -x "$npm_path" ]]; then
+    [[ -x "$node_path" ]] || restore_node=1
+    info 'Restoring Node.js/npm so PM2 can be uninstalled through its package manager.'
+    install_node
+    hash -r
+  fi
   if [[ "$OS" == "macos" ]]; then run npm uninstall --global pm2
   else root_run npm uninstall --global pm2
   fi
+  if ((restore_node)); then remove_node; fi
 }
 
 remove_mysql() {
@@ -562,6 +573,17 @@ component_workflow() {
   local mode=$1 index fn plan_title
   select_components "$mode" || { info "No components selected."; return; }
   ((${#SELECTED_COMPONENTS[@]})) || { info "No components selected."; return; }
+  if [[ "$mode" == Remove ]]; then
+    # Keep runtime removal last, both in the preview and execution.
+    local -a removal_order=()
+    for index in "${SELECTED_COMPONENTS[@]}"; do
+      [[ "${COMPONENT_REMOVE[index]}" == remove_node ]] || removal_order+=("$index")
+    done
+    for index in "${SELECTED_COMPONENTS[@]}"; do
+      [[ "${COMPONENT_REMOVE[index]}" != remove_node ]] || removal_order+=("$index")
+    done
+    SELECTED_COMPONENTS=("${removal_order[@]}")
+  fi
   printf '\n'
   if [[ "$mode" == "Install" ]]; then plan_title="INSTALL PLAN"; else plan_title="REMOVE PLAN"; fi
   rule "$plan_title"

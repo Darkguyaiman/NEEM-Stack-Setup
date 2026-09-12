@@ -235,20 +235,37 @@ detect_platform() {
 update_neem() {
   local repository="https://github.com/Darkguyaiman/NEEM-Stack-Setup.git"
   local archive_url="https://github.com/Darkguyaiman/NEEM-Stack-Setup/archive/refs/heads/main.zip"
-  local current latest temp_root temp_base archive source new_version
+  local current latest temp_root temp_base archive source new_version changes backup stamp ancestor_status
   rule "NEEM UPDATE"
-  if [[ -d "$SCRIPT_DIR/.git" ]] && command -v git >/dev/null 2>&1; then
-    if [[ -n "$(git -C "$SCRIPT_DIR" status --porcelain)" ]]; then
-      die "Local project changes are present. Commit or stash them before running neem --update."
-    fi
+  if ((DRY_RUN)); then
+    info 'Would fetch the latest NEEM, save local edits automatically, and update program files.'
+    return
+  fi
+  if [[ -e "$SCRIPT_DIR/.git" ]] && command -v git >/dev/null 2>&1; then
     info "Checking GitHub for updates..."
-    run git -C "$SCRIPT_DIR" fetch origin main
-    current=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
-    latest=$(git -C "$SCRIPT_DIR" rev-parse origin/main)
+    run git -C "$SCRIPT_DIR" fetch origin main || return 1
+    current=$(git -C "$SCRIPT_DIR" rev-parse HEAD) || return 1
+    latest=$(git -C "$SCRIPT_DIR" rev-parse FETCH_HEAD) || return 1
+    changes=$(git -C "$SCRIPT_DIR" status --porcelain) || return 1
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    if [[ -n "$changes" ]]; then
+      run git -c user.name=NEEM -c user.email=neem@localhost -C "$SCRIPT_DIR" stash push --include-untracked -m "NEEM automatic update backup $stamp" || return 1
+      backup=$(git -C "$SCRIPT_DIR" rev-parse refs/stash) || return 1
+      info "Local edits saved automatically in Git stash $backup."
+    fi
     if [[ "$current" == "$latest" ]]; then
       ok "NEEM v$VERSION is already current."
     else
-      run git -C "$SCRIPT_DIR" merge --ff-only origin/main
+      if git -C "$SCRIPT_DIR" merge-base --is-ancestor "$current" "$latest"; then
+        run git -C "$SCRIPT_DIR" merge --ff-only "$latest" || return 1
+      else
+        ancestor_status=$?
+        ((ancestor_status == 1)) || return "$ancestor_status"
+        backup="neem-backup-$stamp"
+        run git -C "$SCRIPT_DIR" branch "$backup" "$current" || return 1
+        info "Local commits saved on branch $backup."
+        run git -C "$SCRIPT_DIR" reset --keep "$latest" || return 1
+      fi
       new_version=$(tr -d '\r\n' < "$SCRIPT_DIR/VERSION")
       ok "NEEM was updated to v$new_version."
     fi

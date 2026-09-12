@@ -240,7 +240,16 @@ function Uninstall-Package {
 }
 
 function Remove-Node { Uninstall-Package -WingetId 'OpenJS.NodeJS.LTS' -ChocoId 'nodejs-lts' -Name 'Node.js' }
-function Remove-PM2 { Invoke-Step { npm uninstall --global pm2 } 'npm uninstall --global pm2'; Write-Ok 'PM2 removal finished.' }
+function Remove-PM2 {
+    $restoreNode = -not [bool](Get-Command node -ErrorAction SilentlyContinue)
+    if ($restoreNode -or -not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Info 'Restoring Node.js/npm so PM2 can be uninstalled through its package manager.'
+        Install-ProductionPackage -Component node -WingetId 'OpenJS.NodeJS.LTS' -ChocoId 'nodejs-lts'
+    }
+    Invoke-Step { npm uninstall --global pm2 } 'npm uninstall --global pm2'
+    if ($restoreNode) { Remove-Node }
+    Write-Ok 'PM2 removal finished.'
+}
 function Remove-MySQL {
     Write-Warn 'The MySQL package will be removed; existing databases and configuration are intentionally retained.'
     Uninstall-Package -WingetId 'Oracle.MySQL' -ChocoId 'mysql' -Name 'MySQL'

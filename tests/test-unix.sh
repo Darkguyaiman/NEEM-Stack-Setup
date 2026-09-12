@@ -220,4 +220,71 @@ pass 'repository setup and refresh failure handling run without changing system 
 )
 pass 'production installer pins matching packages, rejects mismatches, and previews offline'
 
+(
+  select_components() { SELECTED_COMPONENTS=(0 1 3); }
+  confirm() { return 0; }
+  remove_pm2() { printf 'REMOVE:pm2\n'; }
+  remove_node() { printf 'REMOVE:node\n'; }
+  remove_nginx() { printf 'REMOVE:nginx\n'; }
+  result=$(component_workflow Remove)
+  calls=$(printf '%s\n' "$result" | grep '^REMOVE:')
+  assert_equal $'REMOVE:pm2\nREMOVE:nginx\nREMOVE:node' "$calls" 'batch removal uninstalls PM2 before Node'
+)
+pass 'runtime removal is ordered after dependent components'
+(
+  runtime_ready=0
+  calls=''
+  OS=linux
+  command() {
+    if [[ "$1" == -v && ( "$2" == node || "$2" == npm ) ]]; then
+      ((runtime_ready)) || return 1
+      printf '/bin/bash\n'
+    else builtin command "$@"; fi
+  }
+  install_node() { calls+='restore '; runtime_ready=1; }
+  root_run() { calls+="$* "; }
+  remove_node() { calls+='remove-node'; }
+  remove_pm2
+  assert_equal 'restore npm uninstall --global pm2 remove-node' "$calls" 'orphaned PM2 restores its runtime for uninstall then removes the temporary runtime'
+)
+pass 'PM2 removal recovers when Node was already removed'
+
+(
+  # Real disposable Git repositories exercise backups and update behavior.
+  fixture=$(mktemp -d)
+  trap 'rm -rf -- "$fixture"' EXIT
+  git init -q -b main "$fixture/upstream"
+  printf '1.0.0\n' > "$fixture/upstream/VERSION"
+  printf '#!/bin/sh\nexit 0\n' > "$fixture/upstream/install-neem-command.sh"
+  git -C "$fixture/upstream" add .
+  git -C "$fixture/upstream" -c user.name=Test -c user.email=test@example.invalid commit -qm initial
+  git clone -q "$fixture/upstream" "$fixture/client"
+  SCRIPT_DIR="$fixture/client"
+  DRY_RUN=0
+  VERSION=1.0.0
+  printf '2.0.0\n' > "$fixture/upstream/VERSION"
+  git -C "$fixture/upstream" -c user.name=Test -c user.email=test@example.invalid commit -qam update
+  printf 'local-edit\n' > "$SCRIPT_DIR/VERSION"
+  printf 'personal-notes\n' > "$SCRIPT_DIR/notes.txt"
+  update_neem >/dev/null
+  assert_equal '2.0.0' "$(cat "$SCRIPT_DIR/VERSION")" 'dirty checkout updates automatically'
+  assert_equal 'local-edit' "$(git -C "$SCRIPT_DIR" show 'stash@{0}:VERSION')" 'tracked edits remain in the automatic stash'
+  assert_equal 'personal-notes' "$(git -C "$SCRIPT_DIR" show 'stash@{0}^3:notes.txt')" 'untracked files remain in the automatic stash'
+  printf 'local-commit\n' > "$SCRIPT_DIR/VERSION"
+  git -C "$SCRIPT_DIR" -c user.name=Test -c user.email=test@example.invalid commit -qam local
+  local_commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
+  update_neem >/dev/null
+  assert_equal '2.0.0' "$(cat "$SCRIPT_DIR/VERSION")" 'local commits do not block updating to upstream'
+  backup_commit=$(git -C "$SCRIPT_DIR" for-each-ref --format='%(objectname)' 'refs/heads/neem-backup-*')
+  assert_equal "$local_commit" "$backup_commit" 'local commits are preserved on a backup branch'
+  printf 'keep-on-failure\n' > "$SCRIPT_DIR/VERSION"
+  git -C "$SCRIPT_DIR" remote set-url origin "$fixture/missing"
+  if update_neem >/dev/null 2>&1; then fail 'failed fetch reported success'; fi
+  assert_equal 'keep-on-failure' "$(cat "$SCRIPT_DIR/VERSION")" 'fetch failure leaves edits untouched'
+  DRY_RUN=1
+  update_neem >/dev/null
+  assert_equal 'keep-on-failure' "$(cat "$SCRIPT_DIR/VERSION")" 'update dry run leaves edits untouched'
+)
+pass 'automatic update backups and failure handling pass with real Git repositories'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"

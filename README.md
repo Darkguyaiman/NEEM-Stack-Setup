@@ -353,8 +353,13 @@ neem-stack --update
 ```
 
 `neem --update` and `neem-stack --update` check the project’s GitHub `main`
-branch. A Git checkout updates only through a clean fast-forward and refuses to
-overwrite local changes. A ZIP/downloaded copy asks for confirmation before it
+branch. In a Git checkout, local edits and untracked files are saved automatically
+in a named Git stash before updating. Local commits that diverge from GitHub are
+preserved on a `neem-backup-*` branch, then the checkout moves to the fetched
+version. Saved changes are not reapplied over the update. Backups remain available
+through `git stash list` and `git branch --list 'neem-backup-*'`. A failed fetch
+leaves local files untouched. No Git user configuration is required for backups.
+A ZIP/downloaded copy asks for confirmation before it
 downloads and replaces NEEM program files. After updating, NEEM refreshes the
 global command wrappers automatically. The installed commands always point to
 the live project folder; they do not keep a separate frozen copy of NEEM.
@@ -462,6 +467,10 @@ NEEM Stack Setup v1.1.0
 MIT
 
 ## Production release selection
+
+Batch removal processes Node.js last so PM2 can still use npm to uninstall.
+If Node/npm was already removed, PM2 removal restores the runtime automatically
+for cleanup and removes that temporary runtime afterward when Node was absent.
 
 New Node.js, MySQL, and Nginx installs use native platform scripts to check vendor
 metadata at install time. Node.js selects the newest published LTS version;

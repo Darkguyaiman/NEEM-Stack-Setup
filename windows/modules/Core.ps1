@@ -256,21 +256,40 @@ function Update-NEEM {
     $repository = 'https://github.com/Darkguyaiman/NEEM-Stack-Setup.git'
     $archiveUrl = 'https://github.com/Darkguyaiman/NEEM-Stack-Setup/archive/refs/heads/main.zip'
     Write-Rule 'NEEM UPDATE'
+    if ($DryRun) {
+        Write-Info 'Would fetch the latest NEEM, save local edits automatically, and update program files.'
+        return
+    }
     if ((Test-Path -LiteralPath (Join-Path $script:ProjectRoot '.git')) -and
         (Get-Command git -ErrorAction SilentlyContinue)) {
-        $changes = @(& git -C $script:ProjectRoot status --porcelain)
-        if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the Git working tree.' }
-        if ($changes.Count) {
-            throw 'Local project changes are present. Commit or stash them before running neem --update.'
-        }
         Write-Info 'Checking GitHub for updates...'
         Invoke-Step { & git -C $script:ProjectRoot fetch origin main } 'git fetch origin main'
         $current = (& git -C $script:ProjectRoot rev-parse HEAD).Trim()
-        $latest = (& git -C $script:ProjectRoot rev-parse origin/main).Trim()
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to read the current Git commit.' }
+        $latest = (& git -C $script:ProjectRoot rev-parse FETCH_HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to read the fetched Git commit.' }
+        $changes = @(& git -C $script:ProjectRoot status --porcelain)
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the Git working tree.' }
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '-' + [guid]::NewGuid().ToString('N')
+        if ($changes.Count) {
+            Invoke-Step { & git -c user.name=NEEM -c user.email=neem@localhost -C $script:ProjectRoot stash push --include-untracked -m "NEEM automatic update backup $stamp" } 'Save local edits automatically'
+            $backup = (& git -C $script:ProjectRoot rev-parse refs/stash).Trim()
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to read the automatic backup reference.' }
+            Write-Info "Local edits saved automatically in Git stash $backup."
+        }
         if ($current -eq $latest) {
             Write-Ok "NEEM v$script:Version is already current."
         } else {
-            Invoke-Step { & git -C $script:ProjectRoot merge --ff-only origin/main } 'git merge --ff-only origin/main'
+            & git -C $script:ProjectRoot merge-base --is-ancestor $current $latest
+            $ancestorStatus = $LASTEXITCODE
+            if ($ancestorStatus -eq 0) {
+                Invoke-Step { & git -C $script:ProjectRoot merge --ff-only $latest } 'Apply the latest NEEM update'
+            } elseif ($ancestorStatus -eq 1) {
+                $backup = "neem-backup-$stamp"
+                Invoke-Step { & git -C $script:ProjectRoot branch $backup $current } 'Back up local commits'
+                Write-Info "Local commits saved on branch $backup."
+                Invoke-Step { & git -C $script:ProjectRoot reset --keep $latest } 'Apply the latest NEEM update'
+            } else { throw 'Unable to compare the local and fetched Git commits.' }
             $newVersion = (Get-Content -LiteralPath (Join-Path $script:ProjectRoot 'VERSION') -Raw).Trim()
             Write-Ok "NEEM was updated to v$newVersion."
         }
