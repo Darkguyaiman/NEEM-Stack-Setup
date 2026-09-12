@@ -303,8 +303,17 @@ install_pm2() {
   ok "PM2 installation finished."
 }
 
+mysql_server_installed() {
+  local binary location
+  for binary in mysqld mariadbd; do
+    location=$(command -v "$binary" || true)
+    [[ -n "$location" && -x "$location" ]] && return 0
+  done
+  return 1
+}
+
 install_mysql() {
-  if command -v mysqld >/dev/null 2>&1 || command -v mariadbd >/dev/null 2>&1; then
+  if mysql_server_installed; then
     warn "Existing database retained; security patches and database upgrades require separate maintenance."
     return
   fi
@@ -457,8 +466,21 @@ remove_mysql() {
   case "$PKG" in
     brew) local formula; formula=$(installed_brew_formula mysql) || return; run brew services stop "$formula" || true; package_remove "$formula" ;;
     apt)
-      if dpkg-query -W -f='${Status}' mysql-community-server 2>/dev/null | grep -q 'install ok installed'; then package_remove mysql-community-server
-      else package_remove default-mysql-server; fi
+      local installed package state
+      local -a server_packages=()
+      installed=$(dpkg-query -W -f='${binary:Package}\t${Status}\n') || return 1
+      while IFS=$'\t' read -r package state; do
+        package=${package%%:*}
+        [[ "$state" == 'install ok installed' ]] || continue
+        if [[ "$package" =~ ^(default-mysql-server(-core)?|mysql-(community-server(-core)?|server(-core)?(-[0-9.]+)?)|mariadb-server(-core)?(-[0-9.]+)?)$ ]]; then
+          server_packages+=("$package")
+        fi
+      done <<< "$installed"
+      if ((${#server_packages[@]})); then
+        package_remove "${server_packages[@]}" || return 1
+      elif mysql_server_installed; then
+        die 'A database server binary remains outside the recognized APT packages. Removal was not completed.'
+      fi
       ;;
     dnf|yum)
       if rpm -q mysql-community-server >/dev/null 2>&1; then package_remove mysql-community-server
@@ -467,6 +489,10 @@ remove_mysql() {
     pacman) package_remove mariadb ;;
     zypper) package_remove mysql-community-server ;;
   esac
+  hash -r
+  if ((!DRY_RUN)) && mysql_server_installed; then
+    die 'A database server binary is still installed. Removal was not completed; database files were retained.'
+  fi
 }
 
 remove_nginx() {
@@ -514,7 +540,7 @@ component_installed() {
   case "$1" in
     0) command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 ;;
     1) command -v pm2 >/dev/null 2>&1 ;;
-    2) command -v mysqld >/dev/null 2>&1 || command -v mariadbd >/dev/null 2>&1 ;;
+    2) mysql_server_installed ;;
     3) command -v nginx >/dev/null 2>&1 ;;
     4) command -v micro >/dev/null 2>&1 ;;
     5) command -v glances >/dev/null 2>&1 ;;

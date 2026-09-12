@@ -306,4 +306,31 @@ pass 'PM2 removal recovers when Node was already removed'
 )
 pass 'automatic update backups and failure handling pass with real Git repositories'
 
+(
+  PKG=apt
+  DRY_RUN=0
+  remaining=1
+  removed=''
+  dpkg-query() {
+    printf 'mysql-community-server-core\tinstall ok installed\n'
+    printf 'mysql-community-server\tdeinstall ok config-files\n'
+    printf 'mysql-community-client\tinstall ok installed\n'
+    printf 'unrelated-app\tinstall ok installed\n'
+  }
+  mysql_server_installed() { ((remaining)); }
+  package_remove() { removed="$*"; remaining=0; }
+  remove_mysql
+  assert_equal 'mysql-community-server-core' "$removed" 'MySQL removal handles an orphaned core package without removing clients or unrelated packages'
+  assert_false 'MySQL disappears from the picker after core removal' component_installed 2
+  remaining=1
+  package_remove() { return 0; }
+  if (remove_mysql) >/dev/null 2>&1; then fail 'leftover server binary reported successful removal'; fi
+)
+pass 'MySQL core leftovers are removed and remaining binaries prevent false success'
+(
+  command() { printf '/nonexistent/neem-test-mysqld\n'; }
+  assert_false 'stale command locations do not mark MySQL installed' mysql_server_installed
+)
+pass 'database detection verifies the server executable still exists'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"
