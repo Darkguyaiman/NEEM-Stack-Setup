@@ -214,11 +214,35 @@ configure_domain() {
 }
 
 pm2_startup() {
+  local processes count
   need_command pm2
-  run pm2 save
-  info "PM2 will print the exact privileged command required by this operating system."
-  run pm2 startup
-  warn "If PM2 printed a sudo command, run that command once to finish startup registration."
+  rule 'PM2 STARTUP'
+  info 'Restore the current PM2 app list when this machine restarts.'
+  if ((DRY_RUN)); then
+    info 'Would show managed apps and ask before saving them and registering startup.'
+    return
+  fi
+  processes=$(pm2 jlist) || return 1
+  count=$(printf '%s' "$processes" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const a=JSON.parse(s);if(!Array.isArray(a))throw Error();console.log(a.length)}catch{process.exit(1)}})') || {
+    warn 'Could not read the PM2 app list.'; return 1;
+  }
+  if ((count == 0)); then
+    info 'PM2 is not managing any apps yet. There is nothing to restore at boot.'
+    info 'Start your app with PM2, then choose Configure PM2 startup again.'
+    printf '\n  Example, from an app folder with an npm start script:\n    pm2 start npm --name my-app -- start\n\n'
+    return
+  fi
+  show_pm2_apps
+  confirm "Save these $count app(s) and configure startup?" || return
+  package_step 'Saving PM2 apps' run pm2 save || return 1
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    package_step 'Registering PM2 startup' run pm2 startup || return 1
+    ok "PM2 startup configured for $count app(s)."
+  else
+    info 'PM2 will show the administrator command needed to register startup for your user.'
+    run pm2 startup || return 1
+    info 'Run the displayed sudo command to finish startup registration.'
+  fi
 }
 
 quick_tunnel_state_root() {
