@@ -366,6 +366,11 @@ the live project folder; they do not keep a separate frozen copy of NEEM.
 
 ## What the scripts change
 
+Install/remove workflows show numbered component steps and short progress
+messages. Routine package-manager output is hidden. Failures show the last
+12 output lines and the location of a full temporary log; successful step logs
+are removed. Restart notices remain visible, and dry runs still show commands.
+
 - Installs packages through the operating system's package manager.
 - Installs PM2 globally with npm.
 - Enables database and Nginx services where the operating system supports it.

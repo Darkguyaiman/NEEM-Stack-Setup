@@ -4,6 +4,30 @@
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Invoke-PackageStep {
+    param([Parameter(Mandatory)][scriptblock]$Action, [Parameter(Mandatory)][string]$Display)
+    if ($DryRun) { Invoke-Step -Action $Action -Display $Display; return }
+    $log = Join-Path ([IO.Path]::GetTempPath()) ('neem-step-' + [guid]::NewGuid().ToString('N') + '.log')
+    $label = if ($Display -match 'uninstall|remove') { 'Removing packages' }
+        elseif ($Display -match 'install') { 'Installing packages' }
+        else { 'Working' }
+    Write-Theme -Text "    $label..." -Role Muted
+    try {
+        $global:LASTEXITCODE = 0
+        & $Action *> $log
+        if ($LASTEXITCODE -ne 0) { throw "Command exited with code $LASTEXITCODE." }
+    } catch {
+        Write-Warn "Step failed: $Display"
+        if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 12 | ForEach-Object { Write-Host $_ } }
+        Write-Warn "Full output: $log"
+        throw
+    }
+    if (Select-String -LiteralPath $log -Pattern 'reboot required|restart required' -Quiet) {
+        Write-Warn 'A restart is needed after these changes.'
+    }
+    Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+}
+
 function Initialize-PackageManager {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         $script:PackageManager = 'winget'
@@ -17,9 +41,9 @@ function Initialize-PackageManager {
 function Install-Package {
     param([string]$WingetId, [string]$ChocoId, [string]$Name)
     if ($script:PackageManager -eq 'winget') {
-        Invoke-Step { winget install --id $WingetId --exact --accept-package-agreements --accept-source-agreements } "winget install $WingetId"
+        Invoke-PackageStep { winget install --id $WingetId --exact --accept-package-agreements --accept-source-agreements } "winget install $WingetId"
     } else {
-        Invoke-Step { choco install $ChocoId -y } "choco install $ChocoId"
+        Invoke-PackageStep { choco install $ChocoId -y } "choco install $ChocoId"
     }
     if (-not $DryRun) { Update-ProcessPath }
     Write-Ok "$Name installation finished."
@@ -87,9 +111,9 @@ function Install-ProductionPackage {
     $version = Get-ProductionVersion $Component
     Write-Info "Selected $Component $version (latest LTS/stable patch)."
     if ($script:PackageManager -eq 'winget') {
-        Invoke-Step { winget install --id $WingetId --exact --version $version --accept-package-agreements --accept-source-agreements } "winget install $WingetId --version $version"
+        Invoke-PackageStep { winget install --id $WingetId --exact --version $version --accept-package-agreements --accept-source-agreements } "winget install $WingetId --version $version"
     } else {
-        Invoke-Step { choco install $ChocoId --version $version -y } "choco install $ChocoId --version $version"
+        Invoke-PackageStep { choco install $ChocoId --version $version -y } "choco install $ChocoId --version $version"
     }
     Update-ProcessPath
     Write-Ok "$Component $version installation finished."
@@ -109,7 +133,7 @@ function Install-PM2 {
         Write-Ok 'PM2 is already installed.'
         return
     }
-    Invoke-Step { npm install --global pm2@latest } 'npm install --global pm2@latest'
+    Invoke-PackageStep { npm install --global pm2@latest } 'npm install --global pm2@latest'
 }
 
 function Install-MySQL {
@@ -182,7 +206,7 @@ function Install-Glances {
         Install-Package -WingetId 'Python.Python.3.13' -ChocoId 'python313' -Name 'Python'
     }
     $python = if (Get-Command py -ErrorAction SilentlyContinue) { 'py' } else { 'python' }
-    Invoke-Step { & $python -m pip install --user --upgrade glances } "$python -m pip install --user --upgrade glances"
+    Invoke-PackageStep { & $python -m pip install --user --upgrade glances } "$python -m pip install --user --upgrade glances"
 }
 
 function Install-WinAcme {
@@ -196,7 +220,7 @@ function Install-WinAcme {
     }
     $destination = Join-Path $env:ProgramData 'NEEM\win-acme'
     Write-Info 'Downloading the current win-acme release from its official GitHub repository...'
-    Invoke-Step {
+    Invoke-PackageStep {
         $release = Invoke-RestMethod 'https://api.github.com/repos/win-acme/win-acme/releases/latest'
         $asset = $release.assets |
             Where-Object { $_.name -match '^win-acme\..*\.x64\.trimmed\.zip$' } |
@@ -232,9 +256,9 @@ function Install-All {
 function Uninstall-Package {
     param([string]$WingetId, [string]$ChocoId, [string]$Name)
     if ($script:PackageManager -eq 'winget') {
-        Invoke-Step { winget uninstall --id $WingetId --exact --accept-source-agreements } "winget uninstall $WingetId"
+        Invoke-PackageStep { winget uninstall --id $WingetId --exact --accept-source-agreements } "winget uninstall $WingetId"
     } else {
-        Invoke-Step { choco uninstall $ChocoId -y } "choco uninstall $ChocoId"
+        Invoke-PackageStep { choco uninstall $ChocoId -y } "choco uninstall $ChocoId"
     }
     Write-Ok "$Name removal finished."
 }
@@ -246,7 +270,7 @@ function Remove-PM2 {
         Write-Info 'Restoring Node.js/npm so PM2 can be uninstalled through its package manager.'
         Install-ProductionPackage -Component node -WingetId 'OpenJS.NodeJS.LTS' -ChocoId 'nodejs-lts'
     }
-    Invoke-Step { npm uninstall --global pm2 } 'npm uninstall --global pm2'
+    Invoke-PackageStep { npm uninstall --global pm2 } 'npm uninstall --global pm2'
     if ($restoreNode) { Remove-Node }
     Write-Ok 'PM2 removal finished.'
 }
@@ -260,14 +284,14 @@ function Remove-Cloudflared {
     $cloudflared = Get-CloudflaredPath
     $service = Get-Service -Name cloudflared -ErrorAction SilentlyContinue
     if ($service -and $cloudflared) {
-        Invoke-Step { & $cloudflared service uninstall } 'cloudflared service uninstall'
+        Invoke-PackageStep { & $cloudflared service uninstall } 'cloudflared service uninstall'
     }
     Uninstall-Package -WingetId 'Cloudflare.cloudflared' -ChocoId 'cloudflared' -Name 'Cloudflare Tunnel'
 }
 function Remove-Micro { Uninstall-Package -WingetId 'zyedidia.micro' -ChocoId 'micro' -Name 'Micro' }
 function Remove-Glances {
     $python = if (Get-Command py -ErrorAction SilentlyContinue) { 'py' } else { 'python' }
-    Invoke-Step { & $python -m pip uninstall --yes glances } "$python -m pip uninstall --yes glances"
+    Invoke-PackageStep { & $python -m pip uninstall --yes glances } "$python -m pip uninstall --yes glances"
     Write-Ok 'Glances removal finished.'
 }
 function Remove-WinAcme {
@@ -277,7 +301,7 @@ function Remove-WinAcme {
     }
     $destination = Join-Path $env:ProgramData 'NEEM\win-acme'
     if (-not (Test-Path $destination)) { Write-Warn 'The NEEM-managed win-acme folder was not found.'; return }
-    Invoke-Step { Remove-Item -LiteralPath $destination -Recurse -Force } "remove $destination"
+    Invoke-PackageStep { Remove-Item -LiteralPath $destination -Recurse -Force } "remove $destination"
     Write-Ok 'win-acme removal finished. Existing certificates were left in the Nginx folder.'
 }
 

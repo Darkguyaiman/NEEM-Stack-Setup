@@ -1,34 +1,58 @@
 # Package-manager integration and component install/remove operations.
+package_step() {
+  local label=$1 log status
+  shift
+  if ((DRY_RUN)); then run "$@"; return; fi
+  # Keep privilege prompts on the terminal before capturing routine output.
+  if [[ "$1" == root_run && ${EUID:-$(id -u)} -ne 0 ]]; then
+    sudo -v || return 1
+  fi
+  log=$(mktemp "${TMPDIR:-/tmp}/neem-step.XXXXXX") || return 1
+  printf '    %s...\n' "$label"
+  if "$@" > "$log" 2>&1; then
+    if grep -Eqi 'Service restarts being deferred|reboot required|restart required' "$log"; then
+      warn 'Some services or the system need a restart after these changes.'
+    fi
+    rm -f -- "$log"
+  else
+    status=$?
+    warn "$label failed (exit $status)."
+    tail -n 12 "$log" >&2
+    warn "Full output: $log"
+    return "$status"
+  fi
+}
+
 package_refresh() {
   case "$PKG" in
-    apt) root_run apt-get update ;;
-    dnf) root_run dnf makecache ;;
-    yum) root_run yum makecache ;;
-    pacman) root_run pacman -Sy ;;
-    zypper) root_run zypper refresh ;;
-    brew) run brew update ;;
+    apt) package_step 'Refreshing packages' root_run apt-get update ;;
+    dnf) package_step 'Refreshing packages' root_run dnf makecache ;;
+    yum) package_step 'Refreshing packages' root_run yum makecache ;;
+    pacman) package_step 'Refreshing packages' root_run pacman -Sy ;;
+    zypper) package_step 'Refreshing packages' root_run zypper refresh ;;
+    brew) package_step 'Refreshing packages' run brew update ;;
   esac
 }
 
 package_install() {
   case "$PKG" in
-    apt) root_run env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
-    dnf) root_run dnf install -y "$@" ;;
-    yum) root_run yum install -y "$@" ;;
-    pacman) root_run pacman -S --needed --noconfirm "$@" ;;
-    zypper) root_run zypper --non-interactive install "$@" ;;
-    brew) run brew install "$@" ;;
+    apt) package_step 'Installing packages' root_run env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+    dnf) package_step 'Installing packages' root_run dnf install -y "$@" ;;
+    yum) package_step 'Installing packages' root_run yum install -y "$@" ;;
+    pacman) package_step 'Installing packages' root_run pacman -S --needed --noconfirm "$@" ;;
+    zypper) package_step 'Installing packages' root_run zypper --non-interactive install "$@" ;;
+    brew) package_step 'Installing packages' run brew install "$@" ;;
   esac
 }
 
 package_remove() {
   case "$PKG" in
-    apt) root_run apt-get remove -y "$@" ;;
-    dnf) root_run dnf remove -y "$@" ;;
-    yum) root_run yum remove -y "$@" ;;
-    pacman) root_run pacman -R --noconfirm "$@" ;;
-    zypper) root_run zypper --non-interactive remove "$@" ;;
-    brew) run brew uninstall "$@" ;;
+    apt) package_step 'Removing packages' root_run apt-get remove -y "$@" ;;
+    dnf) package_step 'Removing packages' root_run dnf remove -y "$@" ;;
+    yum) package_step 'Removing packages' root_run yum remove -y "$@" ;;
+    pacman) package_step 'Removing packages' root_run pacman -R --noconfirm "$@" ;;
+    zypper) package_step 'Removing packages' root_run zypper --non-interactive remove "$@" ;;
+    brew) package_step 'Removing packages' run brew uninstall "$@" ;;
   esac
 }
 
@@ -157,7 +181,7 @@ configure_apt_production_repository() (
   [[ ! -f "$source_path" ]] || cp "$source_path" "$stage/previous-source"
   root_run install -m 0644 "$stage/key.asc" "$key_path" || return 1
   root_run install -m 0644 "$stage/vendor.list" "$source_path" || return 1
-  if ! root_run apt-get update -o APT::Update::Error-Mode=any; then
+  if ! package_step 'Refreshing vendor packages' root_run apt-get update -o APT::Update::Error-Mode=any; then
     if [[ -f "$stage/previous-source" ]]; then root_run install -m 0644 "$stage/previous-source" "$source_path"
     else root_run rm -f -- "$source_path"; fi
     if [[ -f "$stage/previous-key" ]]; then root_run install -m 0644 "$stage/previous-key" "$key_path"
@@ -272,8 +296,8 @@ install_pm2() {
     ok "PM2 is already installed."
   else
     info "Installing the latest PM2 globally with npm..."
-    if [[ "$OS" == "macos" ]]; then run npm install --global pm2@latest
-    else root_run npm install --global pm2@latest
+    if [[ "$OS" == "macos" ]]; then package_step 'Installing PM2' run npm install --global pm2@latest
+    else package_step 'Installing PM2' root_run npm install --global pm2@latest
     fi
   fi
   ok "PM2 installation finished."
@@ -350,10 +374,10 @@ install_glances() {
   info "Installing Glances in an isolated pipx environment..."
   case "$PKG" in
     brew) package_install glances ;;
-    apt) package_install pipx; run pipx ensurepath; run pipx install glances ;;
-    dnf|yum) package_install python3-pip; run python3 -m pip install --user --upgrade glances ;;
+    apt) package_install pipx; package_step 'Configuring Glances' run pipx ensurepath; package_step 'Installing Glances' run pipx install glances ;;
+    dnf|yum) package_install python3-pip; package_step 'Installing Glances' run python3 -m pip install --user --upgrade glances ;;
     pacman) package_install glances ;;
-    zypper) package_install python3-pip; run python3 -m pip install --user --upgrade glances ;;
+    zypper) package_install python3-pip; package_step 'Installing Glances' run python3 -m pip install --user --upgrade glances ;;
   esac
   ok "Glances installation finished. You may need a new shell before 'glances' is on PATH."
 }
@@ -422,8 +446,8 @@ remove_pm2() {
     install_node
     hash -r
   fi
-  if [[ "$OS" == "macos" ]]; then run npm uninstall --global pm2
-  else root_run npm uninstall --global pm2
+  if [[ "$OS" == "macos" ]]; then package_step 'Removing PM2' run npm uninstall --global pm2
+  else package_step 'Removing PM2' root_run npm uninstall --global pm2
   fi
   if ((restore_node)); then remove_node; fi
 }
@@ -468,8 +492,8 @@ remove_micro() { package_remove micro; }
 remove_glances() {
   case "$PKG" in
     brew|pacman) package_remove glances ;;
-    apt) command -v pipx >/dev/null 2>&1 && run pipx uninstall glances || package_remove glances ;;
-    dnf|yum|zypper) run python3 -m pip uninstall --yes glances ;;
+    apt) command -v pipx >/dev/null 2>&1 && package_step 'Removing Glances' run pipx uninstall glances || package_remove glances ;;
+    dnf|yum|zypper) package_step 'Removing Glances' run python3 -m pip uninstall --yes glances ;;
   esac
 }
 
@@ -570,7 +594,7 @@ select_components() {
 }
 
 component_workflow() {
-  local mode=$1 index fn plan_title
+  local mode=$1 index fn plan_title position=0
   select_components "$mode" || { info "No components selected."; return; }
   ((${#SELECTED_COMPONENTS[@]})) || { info "No components selected."; return; }
   if [[ "$mode" == Remove ]]; then
@@ -591,11 +615,13 @@ component_workflow() {
   confirm "$mode these ${#SELECTED_COMPONENTS[@]} component(s)?" || return
   [[ "$mode" == "Install" ]] && package_refresh
   for index in "${SELECTED_COMPONENTS[@]}"; do
-    rule "${COMPONENT_NAMES[index]}"
+    position=$((position + 1))
+    rule "$position/${#SELECTED_COMPONENTS[@]}  ${COMPONENT_NAMES[index]}"
     if [[ "$mode" == "Install" ]]; then fn=${COMPONENT_INSTALL[index]}
     else fn=${COMPONENT_REMOVE[index]}
     fi
     "$fn"
+    ok "${COMPONENT_NAMES[index]} complete."
   done
   ok "$mode workflow complete."
 }

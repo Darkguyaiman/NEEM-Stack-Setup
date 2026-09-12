@@ -102,10 +102,13 @@ function Invoke-ComponentWorkflow {
     Write-Rule "$($Mode.ToUpper()) PLAN"
     $items | ForEach-Object { Write-Theme -Text "  * $($_.Name)" -Role Primary }
     if (-not (Confirm-Action "$Mode these $($items.Count) component(s)?")) { return }
+    $position = 0
     foreach ($item in $items) {
-        Write-Rule $item.Name
+        $position++
+        Write-Rule "$position/$($items.Count)  $($item.Name)"
         $command = $item.$Mode
         & $command
+        Write-Ok "$($item.Name) complete."
     }
     Write-Ok "$Mode workflow complete."
 }

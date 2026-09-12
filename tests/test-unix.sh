@@ -122,6 +122,23 @@ if grep -R -E 'â[„œ–—]' "$PROJECT_ROOT/neem.sh" "$PROJECT_ROOT/linux" >/
 fi
 pass 'Bash scripts retain valid UTF-8 symbols'
 
+(
+  DRY_RUN=0
+  noisy_success() { printf 'unnecessary package details\n'; }
+  result=$(package_step 'Installing example' noisy_success)
+  assert_contains "$result" 'Installing example...' 'quiet commands show readable progress'
+  [[ "$result" != *'unnecessary package details'* ]] || fail 'successful command output leaked'
+  noisy_failure() { printf 'meaningful failure detail\n'; return 7; }
+  if result=$(package_step 'Installing example' noisy_failure 2>&1); then fail 'failed quiet command reported success';
+  else status=$?; fi
+  assert_equal 7 "$status" 'quiet command preserves its failure exit status'
+  assert_contains "$result" 'meaningful failure detail' 'failed quiet commands show diagnostic output'
+  failure_log=${result##*Full output: }
+  [[ -f "$failure_log" ]] || fail 'failure log was not preserved'
+  rm -f -- "$failure_log"
+)
+pass 'quiet progress hides routine output and preserves failures'
+
 # Parser tests use jq, the same small JSON tool bootstrapped by the installer.
 command -v jq >/dev/null 2>&1 || fail 'jq is required to run release-parser tests'
 node_metadata='[{"version":"v26.1.0","lts":false},{"version":"v24.9.0","lts":"Example"},{"version":"v24.10.0","lts":"Example"}]'
@@ -163,6 +180,7 @@ assert_false 'unknown distributions do not receive guessed repositories' apt_rep
 assert_false 'invalid release metadata cannot enter repository configuration' apt_repository_spec node '24;bad' ubuntu noble amd64
 (
   repository_log=$(mktemp)
+  sudo() { return 0; }
   trap 'rm -f -- "$repository_log"' EXIT
   apt_platform() { printf 'ubuntu noble\n'; }
   dpkg() { printf 'amd64\n'; }
@@ -233,6 +251,7 @@ pass 'production installer pins matching packages, rejects mismatches, and previ
 pass 'runtime removal is ordered after dependent components'
 (
   runtime_ready=0
+  sudo() { return 0; }
   calls=''
   OS=linux
   command() {

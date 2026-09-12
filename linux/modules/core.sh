@@ -1,8 +1,8 @@
 # Terminal presentation, shared execution, platform detection, and self-update.
-info() { printf '%sℹ%s %s\n' "$BLUE" "$RESET" "$*"; }
-ok() { printf '%s✓%s %s\n' "$GREEN" "$RESET" "$*"; }
+info() { printf '%s[i]%s %s\n' "$BLUE" "$RESET" "$*"; }
+ok() { printf '%s[ok]%s %s\n' "$GREEN" "$RESET" "$*"; }
 warn() { printf '%s!%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
-die() { printf '%s✗%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
+die() { printf '%s[error]%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
 pause() { [[ $DRY_RUN -eq 1 ]] || read -r -p "Press Enter to continue..." _; }
 
 hyperlink() {
