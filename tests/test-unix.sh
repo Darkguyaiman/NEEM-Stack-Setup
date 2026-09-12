@@ -339,4 +339,24 @@ assert_contains "$webroot_result" '# root /usr/share/nginx/html;' 'commented Ngi
 assert_contains "$webroot_result" '    root /srv/custom;' 'custom Nginx webroots remain unchanged'
 assert_equal "$webroot_result" "$(printf '%s\n' "$webroot_result" | rewrite_nginx_webroot)" 'webroot migration is repeatable'
 
+(
+  declare -a connection_args mysql_prefix
+  socket_client() { return 0; }
+  mysql_admin_connection socket_client 127.0.0.1 3306 root >/dev/null
+  assert_contains "${connection_args[*]}" '--protocol=SOCKET' 'local root uses socket authentication when available'
+  [[ " ${connection_args[*]} " != *' --password '* ]] || fail 'socket login requested a password'
+  assert_equal 0 "${#mysql_prefix[@]}" 'direct socket login needs no sudo'
+  socket_client() { return 1; }
+  sudo() { return 0; }
+  mysql_admin_connection socket_client localhost 3306 root >/dev/null
+  assert_equal 'sudo -n' "${mysql_prefix[*]}" 'sudo socket authentication is retained for subsequent queries'
+  socket_client() { fail 'remote and nondefault-port connections must not probe the local socket'; }
+  mysql_admin_connection socket_client db.example.com 3306 root >/dev/null
+  assert_contains "${connection_args[*]}" '--protocol=TCP' 'remote administrators retain TCP authentication'
+  assert_equal 0 "${#mysql_prefix[@]}" 'remote login clears the sudo prefix'
+  mysql_admin_connection socket_client localhost 3307 root >/dev/null
+  assert_contains "${connection_args[*]}" '--port=3307' 'nondefault ports are never redirected to the default socket'
+)
+pass 'MySQL user management supports local socket authentication without a root password'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"

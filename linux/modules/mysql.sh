@@ -247,9 +247,30 @@ select_mysql_user_action() {
   done
 }
 
+mysql_admin_connection() {
+  local client=$1 host=$2 port=$3 user=$4
+  local -a socket_args=(--no-defaults --user=root --protocol=SOCKET --skip-password --connect-timeout=5)
+  mysql_prefix=()
+  connection_args=(--host="$host" --port="$port" --user="$user" --password --protocol=TCP)
+  if [[ "$user" == root && "$port" == 3306 && ( "$host" == localhost || "$host" == 127.0.0.1 ) ]]; then
+    if "$client" "${socket_args[@]}" --execute='SELECT 1' >/dev/null 2>&1; then
+      connection_args=("${socket_args[@]}")
+      info 'Connected as local MySQL root. No administrator password is needed.'
+      return
+    fi
+    if command -v sudo >/dev/null 2>&1 && sudo -n "$client" "${socket_args[@]}" --execute='SELECT 1' >/dev/null 2>&1; then
+      mysql_prefix=(sudo -n)
+      connection_args=("${socket_args[@]}")
+      info 'Connected as local MySQL root using sudo. No administrator password is needed.'
+      return
+    fi
+  fi
+  info 'MySQL will ask for the administrator password without displaying it.'
+}
+
 mysql_list_users() {
   local mysql_cmd host port admin_user
-  local -a connection_args
+  local -a connection_args mysql_prefix
   mysql_cmd=$(command -v mysql || command -v mariadb || true)
   if ((DRY_RUN)); then mysql_cmd=${mysql_cmd:-mysql}; fi
   [[ -n "$mysql_cmd" ]] || { warn "MySQL client tools were not found. Install MySQL or MariaDB first."; return 1; }
@@ -265,10 +286,9 @@ mysql_list_users() {
   read -r -p "MySQL port [3306]: " port; port=${port:-3306}
   [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)) || { warn "Port must be between 1 and 65535."; return 1; }
   read -r -p "MySQL administrator [root]: " admin_user; admin_user=${admin_user:-root}
-  connection_args=(--host="$host" --port="$port" --user="$admin_user" --password --protocol=TCP)
-  info "MySQL will ask for the administrator password without displaying it."
+  mysql_admin_connection "$mysql_cmd" "$host" "$port" "$admin_user"
   rule "ACCOUNTS ON THIS SERVER"
-  if ! "$mysql_cmd" "${connection_args[@]}" --table \
+  if ! "${mysql_prefix[@]}" "$mysql_cmd" "${connection_args[@]}" --table \
     --execute='SELECT User AS USER, Host AS ALLOWED_HOST FROM mysql.user ORDER BY User, Host'; then
     warn "MySQL users could not be listed. Use an administrator with permission to read mysql.user."
     return 1
@@ -291,7 +311,7 @@ mysql_create_user() {
   local scope=${1:-database}
   local mysql_cmd host port admin_user database choice new_user allowed_host password password_again answer
   local escaped_database escaped_user escaped_host escaped_password sql
-  local -a databases connection_args
+  local -a databases connection_args mysql_prefix
 
   mysql_cmd=$(command -v mysql || command -v mariadb || true)
   if ((DRY_RUN)); then mysql_cmd=${mysql_cmd:-mysql}; fi
@@ -324,8 +344,7 @@ mysql_create_user() {
     [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)) || { warn "Port must be between 1 and 65535."; return 1; }
     read -r -p "MySQL administrator [root]: " admin_user
     admin_user=${admin_user:-root}
-    connection_args=(--host="$host" --port="$port" --user="$admin_user" --password --protocol=TCP)
-    info "MySQL will ask for the administrator password without displaying it."
+    mysql_admin_connection "$mysql_cmd" "$host" "$port" "$admin_user"
     if [[ "$scope" == "all" ]]; then
       clear 2>/dev/null || true; show_brand
       rule "STEP 2 OF 4 | CONFIRM SERVER-WIDE ACCESS"
@@ -337,7 +356,7 @@ mysql_create_user() {
       databases=()
       while IFS= read -r answer; do
         case "$answer" in information_schema|performance_schema|mysql|sys|'') ;; *) databases+=("$answer") ;; esac
-      done < <("$mysql_cmd" "${connection_args[@]}" --batch --skip-column-names --execute='SHOW DATABASES')
+      done < <("${mysql_prefix[@]}" "$mysql_cmd" "${connection_args[@]}" --batch --skip-column-names --execute='SHOW DATABASES')
       ((${#databases[@]})) || { warn "No user databases were returned."; return 1; }
       if ! select_mysql_database "STEP 2 OF 4 | CHOOSE A DATABASE" "${databases[@]}"; then
         info "User creation cancelled. No account was changed."
@@ -408,8 +427,10 @@ FLUSH PRIVILEGES;"
     return
   fi
   confirm "Create this database user?" || { password=""; sql=""; return; }
-  info "MySQL will ask for the administrator password again to apply the account plan."
-  if ! printf '%s\n' "$sql" | "$mysql_cmd" "${connection_args[@]}"; then
+  if [[ " ${connection_args[*]} " == *' --password '* ]]; then
+    info 'MySQL will ask for the administrator password again to apply the account plan.'
+  fi
+  if ! printf '%s\n' "$sql" | "${mysql_prefix[@]}" "$mysql_cmd" "${connection_args[@]}"; then
     password=""; escaped_password=""; sql=""
     warn "User creation failed. MySQL may have applied an earlier statement; review the account before retrying."
     return 1

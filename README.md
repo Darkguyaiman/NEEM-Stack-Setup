@@ -147,6 +147,12 @@ features may still require the same or a newer server version.
 
 ## MySQL database users
 
+On Linux/macOS, user creation and account listing automatically try socket
+authentication for local `root` on the default port. If it succeeds, no MySQL
+administrator password is requested. Existing sudo authorization is supported;
+run `sudo neem` when OS administrator access is needed. Remote servers, other
+ports, and password-authenticated accounts retain the password prompt.
+
 Choose **Manage MySQL users** to create an account for one database, create an
 account for all databases, or view the accounts already present on the server.
 The account list shows both `User` and `Host`, because MySQL uses that pair to
