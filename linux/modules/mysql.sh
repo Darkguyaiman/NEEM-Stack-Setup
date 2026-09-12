@@ -249,7 +249,7 @@ select_mysql_user_action() {
 
 mysql_admin_connection() {
   local client=$1 host=$2 port=$3 user=$4
-  local -a socket_args=(--no-defaults --user=root --protocol=SOCKET --skip-password --connect-timeout=5)
+  local -a socket_args=(--no-defaults --user=root --protocol=SOCKET --connect-timeout=5)
   mysql_prefix=()
   connection_args=(--host="$host" --port="$port" --user="$user" --password --protocol=TCP)
   if [[ "$user" == root && "$port" == 3306 && ( "$host" == localhost || "$host" == 127.0.0.1 ) ]]; then
@@ -310,7 +310,7 @@ mysql_user_guide() {
 mysql_create_user() {
   local scope=${1:-database}
   local mysql_cmd host port admin_user database choice new_user allowed_host password password_again answer
-  local escaped_database escaped_user escaped_host escaped_password sql
+  local escaped_database escaped_user escaped_host escaped_password sql database_output create_database=0
   local -a databases connection_args mysql_prefix
 
   mysql_cmd=$(command -v mysql || command -v mariadb || true)
@@ -354,15 +354,29 @@ mysql_create_user() {
       database="all databases"
     else
       databases=()
+      if ! database_output=$("${mysql_prefix[@]}" "$mysql_cmd" "${connection_args[@]}" --batch --skip-column-names --execute='SHOW DATABASES'); then
+        warn 'Could not list databases. Check the connection and administrator permissions.'
+        return 1
+      fi
       while IFS= read -r answer; do
         case "$answer" in information_schema|performance_schema|mysql|sys|'') ;; *) databases+=("$answer") ;; esac
-      done < <("${mysql_prefix[@]}" "$mysql_cmd" "${connection_args[@]}" --batch --skip-column-names --execute='SHOW DATABASES')
-      ((${#databases[@]})) || { warn "No user databases were returned."; return 1; }
-      if ! select_mysql_database "STEP 2 OF 4 | CHOOSE A DATABASE" "${databases[@]}"; then
-        info "User creation cancelled. No account was changed."
-        return
+      done <<< "$database_output"
+      if ((${#databases[@]} == 0)); then
+        info 'No app databases exist yet. You can create one with this user.'
+        while true; do
+          read -r -p 'New database name (Enter to cancel): ' database || return 1
+          [[ -n "$database" ]] || { info 'User creation cancelled. No account was changed.'; return; }
+          [[ "$database" =~ ^[A-Za-z0-9_]{1,64}$ && ! "$database" =~ ^(mysql|sys|information_schema|performance_schema)$ ]] && break
+          warn 'Use 1-64 letters, numbers, or underscores, excluding system database names.'
+        done
+        create_database=1
+      else
+        if ! select_mysql_database "STEP 2 OF 4 | CHOOSE A DATABASE" "${databases[@]}"; then
+          info "User creation cancelled. No account was changed."
+          return
+        fi
+        database=$SELECTED_DATABASE
       fi
-      database=$SELECTED_DATABASE
     fi
     clear 2>/dev/null || true
     show_brand
@@ -413,6 +427,10 @@ FLUSH PRIVILEGES;"
   fi
 
   rule "STEP 4 OF 4 | REVIEW AND CREATE"
+  if ((create_database)); then
+    sql="CREATE DATABASE \`$escaped_database\`;"$'\n'"$sql"
+    info "A new database named '$database' will be created after confirmation."
+  fi
   printf '%s  User:%s      %s@%s\n' "$MUTED" "$RESET" "$new_user" "$allowed_host"
   printf '%s  Database:%s  %s\n' "$MUTED" "$RESET" "$database"
   if [[ "$scope" == "all" ]]; then

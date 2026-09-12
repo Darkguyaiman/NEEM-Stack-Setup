@@ -359,4 +359,28 @@ assert_equal "$webroot_result" "$(printf '%s\n' "$webroot_result" | rewrite_ngin
 )
 pass 'MySQL user management supports local socket authentication without a root password'
 
+(
+  sql_capture=$(mktemp)
+  trap 'rm -f -- "$sql_capture"' EXIT
+  DRY_RUN=0
+  command() { if [[ "$*" == '-v mysql' ]]; then printf 'fake_mysql\n'; else builtin command "$@"; fi; }
+  fake_mysql() {
+    if [[ "$*" == *'SHOW DATABASES'* ]]; then printf 'mysql\nsys\ninformation_schema\nperformance_schema\n'
+    else cat > "$sql_capture"; fi
+  }
+  clear() { :; }
+  show_brand() { :; }
+  mysql_admin_connection() { connection_args=(); mysql_prefix=(); }
+  read_hidden_paste_input() { HIDDEN_PASTE_VALUE='test-password-only'; }
+  confirm() { return 1; }
+  mysql_create_user database <<< $'\n\n\nportfolio\napp_user\n\n' >/dev/null
+  [[ ! -s "$sql_capture" ]] || fail 'cancelled account plan created a database'
+  confirm() { return 0; }
+  mysql_create_user database <<< $'\n\n\nportfolio\napp_user\n\n' >/dev/null
+  result=$(cat "$sql_capture")
+  assert_contains "$result" 'CREATE DATABASE `portfolio`;' 'empty server can create an app database with its user'
+  assert_contains "$result" 'GRANT ALL PRIVILEGES ON `portfolio`.*' 'new user remains scoped to the selected database'
+)
+pass 'empty database setup waits for confirmation before applying SQL'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"
