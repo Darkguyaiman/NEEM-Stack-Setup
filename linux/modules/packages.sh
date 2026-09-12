@@ -95,10 +95,94 @@ production_version() {
   printf '%s' "$content" | parse_production_metadata "$component"
 }
 
+apt_repository_spec() {
+  local component=$1 version=$2 distro=$3 codename=$4 architecture=$5
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$codename" =~ ^[a-z][a-z0-9]*$ && "$architecture" =~ ^[a-z0-9]+$ ]] || return 1
+  [[ "$distro" == ubuntu || "$distro" == debian ]] || return 1
+  case "$component" in
+    node)
+      APT_VENDOR_URL="https://deb.nodesource.com/node_${version%%.*}.x"
+      APT_VENDOR_SUITE=nodistro
+      APT_VENDOR_COMPONENT=main
+      APT_VENDOR_KEY=https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+      ;;
+    mysql)
+      APT_VENDOR_URL="https://repo.mysql.com/apt/$distro"
+      APT_VENDOR_SUITE=$codename
+      APT_VENDOR_COMPONENT="mysql-${version%.*}-lts"
+      APT_VENDOR_KEY=https://repo.mysql.com/RPM-GPG-KEY-mysql-2025
+      ;;
+    nginx)
+      APT_VENDOR_URL="https://nginx.org/packages/$distro"
+      APT_VENDOR_SUITE=$codename
+      APT_VENDOR_COMPONENT=nginx
+      APT_VENDOR_KEY=https://nginx.org/keys/nginx_signing.key
+      ;;
+    *) return 1 ;;
+  esac
+  APT_VENDOR_LINE="deb [arch=$architecture signed-by=/etc/apt/keyrings/neem-$component.asc] $APT_VENDOR_URL $APT_VENDOR_SUITE $APT_VENDOR_COMPONENT"
+}
+
+apt_platform() (
+  local ID='' VERSION_CODENAME=''
+  [[ -r /etc/os-release ]] || return 1
+  . /etc/os-release
+  printf '%s %s\n' "$ID" "$VERSION_CODENAME"
+)
+
+configure_apt_production_repository() (
+  # Subshell keeps os-release variables and cleanup traps local to this operation.
+  local component=$1 version=$2 architecture stage key_path source_path platform distro codename
+  platform=$(apt_platform) || { warn 'Cannot identify the APT distribution.'; return 1; }
+  read -r distro codename <<< "$platform"
+  architecture=$(dpkg --print-architecture) || return 1
+  apt_repository_spec "$component" "$version" "$distro" "$codename" "$architecture" || {
+    warn "Automatic vendor repositories require Debian or Ubuntu with a release codename."; return 1;
+  }
+  info "Configuring $component production repository: $APT_VENDOR_URL ($APT_VENDOR_COMPONENT)."
+  package_install ca-certificates curl || return 1
+  stage=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$stage"' EXIT
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 30 \
+    "$APT_VENDOR_URL/dists/$APT_VENDOR_SUITE/InRelease" -o "$stage/InRelease" || return 1
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 30 \
+    "$APT_VENDOR_KEY" -o "$stage/key.asc" || return 1
+  grep -q '^-----BEGIN PGP PUBLIC KEY BLOCK-----' "$stage/key.asc" || { warn 'Invalid repository signing key.'; return 1; }
+  printf '%s\n' "$APT_VENDOR_LINE" > "$stage/vendor.list"
+  key_path="/etc/apt/keyrings/neem-$component.asc"
+  source_path="/etc/apt/sources.list.d/neem-$component.list"
+  root_run install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d || return 1
+  # Only NEEM-owned files are replaced. Keep copies for a failed refresh.
+  [[ ! -f "$key_path" ]] || cp "$key_path" "$stage/previous-key"
+  [[ ! -f "$source_path" ]] || cp "$source_path" "$stage/previous-source"
+  root_run install -m 0644 "$stage/key.asc" "$key_path" || return 1
+  root_run install -m 0644 "$stage/vendor.list" "$source_path" || return 1
+  if ! root_run apt-get update -o APT::Update::Error-Mode=any; then
+    if [[ -f "$stage/previous-source" ]]; then root_run install -m 0644 "$stage/previous-source" "$source_path"
+    else root_run rm -f -- "$source_path"; fi
+    if [[ -f "$stage/previous-key" ]]; then root_run install -m 0644 "$stage/previous-key" "$key_path"
+    else root_run rm -f -- "$key_path"; fi
+    warn 'Repository refresh failed; the previous NEEM repository configuration was restored.'
+    return 1
+  fi
+)
+
+matching_package_version() {
+  local version=$1 entry upstream
+  while IFS= read -r entry; do
+    upstream=${entry##*:}
+    if [[ "$upstream" == "$version" || "$upstream" == "$version-"* || "$upstream" == "$version+"* ]]; then
+      printf '%s\n' "$entry"
+      return 0
+    fi
+  done
+  return 1
+}
+
 install_production_package() {
   local component=$1 package=$2 version candidate listing upstream formula
   if ((DRY_RUN)); then
-    info "Would verify and install the latest $component LTS/stable patch from the configured repository."
+    info "Would verify and install the latest $component LTS/stable patch, configuring its signed vendor repository on Debian/Ubuntu if needed."
     return
   fi
   version=$(production_version "$component") || die "Could not verify $component release; installation stopped."
@@ -129,6 +213,10 @@ install_production_package() {
     zypper) listing=$(LC_ALL=C zypper --non-interactive info "$package" | awk '/^Version[[:space:]]*:/ {print $3}') ;;
     *) die "Unsupported package manager for verified releases: $PKG" ;;
   esac
+  if [[ "$PKG" == apt ]] && ! matching_package_version "$version" <<< "$listing" >/dev/null; then
+    configure_apt_production_repository "$component" "$version" || die "Could not configure the signed $component repository. Installation stopped."
+    listing=$(apt-cache madison "$package" | awk '{print $3}')
+  fi
   candidate=''
   while IFS= read -r upstream; do
     upstream=${upstream##*:}

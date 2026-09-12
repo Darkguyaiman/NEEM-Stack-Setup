@@ -152,6 +152,46 @@ pass 'missing metadata is rejected without fallback'
 pass 'missing release tools install automatically and are reused in the same run'
 
 # Package calls are mocked: these tests never install software.
+apt_repository_spec node 24.21.0 ubuntu noble amd64 || fail 'Node repository plan failed'
+assert_contains "$APT_VENDOR_LINE" 'https://deb.nodesource.com/node_24.x nodistro main' 'Ubuntu Node uses the selected LTS major at NodeSource'
+assert_contains "$APT_VENDOR_LINE" 'signed-by=/etc/apt/keyrings/neem-node.asc' 'repository trust is scoped to its signing key'
+apt_repository_spec mysql 9.7.2 ubuntu noble amd64 || fail 'MySQL repository plan failed'
+assert_contains "$APT_VENDOR_LINE" 'https://repo.mysql.com/apt/ubuntu noble mysql-9.7-lts' 'Ubuntu MySQL uses the selected LTS channel'
+apt_repository_spec nginx 1.30.4 debian bookworm arm64 || fail 'Nginx repository plan failed'
+assert_contains "$APT_VENDOR_LINE" 'https://nginx.org/packages/debian bookworm nginx' 'Debian Nginx uses the stable repository'
+assert_false 'unknown distributions do not receive guessed repositories' apt_repository_spec node 24.21.0 unknown noble amd64
+assert_false 'invalid release metadata cannot enter repository configuration' apt_repository_spec node '24;bad' ubuntu noble amd64
+(
+  repository_log=$(mktemp)
+  trap 'rm -f -- "$repository_log"' EXIT
+  apt_platform() { printf 'ubuntu noble\n'; }
+  dpkg() { printf 'amd64\n'; }
+  package_install() { printf 'prerequisites:%s\n' "$*" >> "$repository_log"; }
+  curl() {
+    local output=''
+    while (($#)); do
+      if [[ "$1" == -o ]]; then output=$2; break; fi
+      shift
+    done
+    printf '%s\n' '-----BEGIN PGP PUBLIC KEY BLOCK-----' > "$output"
+  }
+  root_run() {
+    printf '%s\n' "$*" >> "$repository_log"
+    return 0
+  }
+  configure_apt_production_repository node 24.21.0 >/dev/null || fail 'repository setup failed'
+  result=$(cat "$repository_log")
+  assert_contains "$result" '/etc/apt/keyrings/neem-node.asc' 'repository setup installs its scoped key'
+  assert_contains "$result" 'apt-get update -o APT::Update::Error-Mode=any' 'repository setup requires a successful signed APT refresh'
+  root_run() {
+    printf '%s\n' "$*" >> "$repository_log"
+    [[ "$1" != apt-get ]]
+  }
+  if configure_apt_production_repository node 24.21.0 >/dev/null 2>&1; then fail 'failed refresh reported success'; fi
+  result=$(cat "$repository_log")
+  assert_contains "$result" 'rm -f -- /etc/apt/sources.list.d/neem-node.list' 'failed refresh removes the newly added source'
+)
+pass 'repository setup and refresh failure handling run without changing system files in tests'
 (
   DRY_RUN=0
   PKG=apt
@@ -161,12 +201,21 @@ pass 'missing release tools install automatically and are reused in the same run
   result=$(install_production_package node nodejs)
   assert_contains "$result" 'INSTALL:nodejs=1:24.10.0-1vendor1' 'APT preserves epoch and pins the verified upstream patch'
   apt-cache() { printf 'nodejs | 26.1.0-1 | repository\n'; }
+  configure_apt_production_repository() { printf 'REPOSITORY:%s\n' "$*"; }
   if result=$(install_production_package node nodejs 2>&1); then
     fail 'wrong-channel repository package should be rejected'
   fi
   [[ "$result" != *INSTALL:* ]] || fail 'rejected package attempted installation'
+  assert_contains "$result" 'REPOSITORY:node 24.10.0' 'missing APT version triggers automatic repository setup'
+  configure_apt_production_repository() {
+    [[ "$*" == 'node 24.10.0' ]] || fail 'wrong repository selection'
+    apt-cache() { printf 'nodejs | 24.10.0-1nodesource1 | repository\n'; }
+  }
+  result=$(install_production_package node nodejs)
+  assert_contains "$result" 'INSTALL:nodejs=24.10.0-1nodesource1' 'installer retries and installs the exact patch after repository setup'
   DRY_RUN=1
   production_version() { fail 'dry run must not fetch release metadata'; }
+  configure_apt_production_repository() { fail 'dry run must not modify repositories'; }
   install_production_package node nodejs >/dev/null
 )
 pass 'production installer pins matching packages, rejects mismatches, and previews offline'

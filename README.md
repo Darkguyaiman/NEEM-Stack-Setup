@@ -481,11 +481,17 @@ Windows requests the exact version through winget or Chocolatey. Linux checks
 repository versions and retains distribution revision suffixes. Homebrew uses
 `node@<major>` and `mysql@<major.minor>` and checks their patch versions. Add
 the displayed versioned Node and MySQL bin directories to your shell PATH on macOS.
-If vendor metadata cannot be verified or the required package is unavailable,
-installation stops instead of choosing an older version, MySQL Innovation,
-or MariaDB. Configure the appropriate vendor repository/channel and retry.
-NEEM does not automatically add third-party repositories. Arch MySQL setup
-requires a separate Oracle MySQL LTS installation.
+On Debian/Ubuntu, if the exact patch is absent, NEEM automatically configures
+NodeSource's selected Node LTS major, Oracle's selected MySQL LTS channel, or
+nginx.org's stable repository. Signing keys are downloaded over HTTPS and
+scoped with `signed-by` in NEEM-owned APT source files. NEEM refreshes APT and
+retries the exact version; a failed refresh restores its previous source/key
+files. No unsigned-package bypass is used. Prerequisites install automatically.
+If metadata cannot be verified, the vendor does not support the OS/architecture,
+or the required patch has not reached the vendor repository, installation stops
+with an error instead of choosing an older version or alternate database.
+Other Linux package managers still require the appropriate repository/channel
+to be configured. Arch MySQL setup requires a separate Oracle MySQL LTS installation.
 
 Other tools retain their existing non-prerelease package-manager, npm, pip,
 or official GitHub release sources. They are not certified vulnerability-free.
