@@ -43,16 +43,138 @@ enable_service() {
   fi
 }
 
+# Resolve upstream policy first, then require that exact upstream version in
+# the configured package repository. Distribution revision suffixes are kept.
+ensure_release_tools() {
+  local tool
+  local -a missing=()
+  for tool in curl jq; do
+    command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+  done
+  if ((${#missing[@]})); then
+    info "Installing release-check tools: ${missing[*]}" >&2
+    package_install "${missing[@]}" >&2 || return 1
+    hash -r
+    for tool in "${missing[@]}"; do
+      command -v "$tool" >/dev/null 2>&1 || { warn "$tool is unavailable after installation."; return 1; }
+    done
+  fi
+}
+
+parse_production_metadata() {
+  local component=$1
+  case "$component" in
+    node)
+      jq -er '[.[] | select((.lts | type) == "string") | select(.lts != "") |
+        .version | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | ltrimstr("v")]
+        | sort_by(split(".") | map(tonumber)) | last // error("No LTS release found")'
+      ;;
+    mysql)
+      jq -erRs '[match("<option\\b[^>]*>\\s*([0-9]+\\.[0-9]+\\.[0-9]+)\\s+LTS\\s*</option>"; "g") | .captures[0].string]
+        | sort_by(split(".") | map(tonumber)) | last // error("No MySQL LTS release found")'
+      ;;
+    nginx)
+      jq -erRs '[capture("Stable version</h4>(?<section>.*?)<h4>"; "s").section |
+        match("nginx-([0-9]+\\.[0-9]+\\.[0-9]+)\\.tar\\.gz"; "g") | .captures[0].string]
+        | sort_by(split(".") | map(tonumber)) | last // error("No Nginx stable release found")'
+      ;;
+    *) warn "Unknown component: $component"; return 1 ;;
+  esac
+}
+
+production_version() {
+  local component=$1 url content
+  case "$component" in
+    node) url=https://nodejs.org/dist/index.json ;;
+    mysql) url=https://dev.mysql.com/downloads/mysql/ ;;
+    nginx) url=https://nginx.org/en/download.html ;;
+    *) warn "Unknown component: $component"; return 1 ;;
+  esac
+  ensure_release_tools || return 1
+  content=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 30 "$url") || return 1
+  printf '%s' "$content" | parse_production_metadata "$component"
+}
+
+install_production_package() {
+  local component=$1 package=$2 version candidate listing upstream formula
+  if ((DRY_RUN)); then
+    info "Would verify and install the latest $component LTS/stable patch from the configured repository."
+    return
+  fi
+  version=$(production_version "$component") || die "Could not verify $component release; installation stopped."
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Invalid release metadata."
+  PRODUCTION_VERSION=$version
+  info "Selected $component $version (latest LTS/stable patch)."
+  if [[ "$PKG" == brew ]]; then
+    formula=$package
+    [[ "$component" == node ]] && formula="node@${version%%.*}"
+    [[ "$component" == mysql ]] && formula="mysql@${version%.*}"
+    listing=$(brew info --json=v2 "$formula") || die "Homebrew has no $formula formula."
+    candidate=$(printf '%s' "$listing" | jq -er '.formulae[0].versions.stable') || die "Cannot read Homebrew version."
+    [[ "$candidate" == "$version" ]] || die "Homebrew offers $candidate; policy requires $version. Update Homebrew and retry."
+    package_install "$formula"
+    PRODUCTION_FORMULA=$formula
+    if [[ "$component" == node || "$component" == mysql ]]; then
+      # Versioned formulas are keg-only. Expose them for subsequent PM2 steps.
+      export PATH="$(brew --prefix "$formula")/bin:$PATH"
+      info "Add $(brew --prefix "$formula")/bin to your shell PATH for future terminals."
+    fi
+    return
+  fi
+  case "$PKG" in
+    apt) listing=$(apt-cache madison "$package" | awk '{print $3}') ;;
+    dnf) listing=$(dnf -q repoquery --available --qf '%{version}-%{release}' "$package") ;;
+    yum) listing=$(yum --showduplicates list available "$package" | awk 'NF >= 3 {print $2}') ;;
+    pacman) listing=$(pacman -Si "$package" | awk '/^Version[[:space:]]*:/ {print $3}') ;;
+    zypper) listing=$(LC_ALL=C zypper --non-interactive info "$package" | awk '/^Version[[:space:]]*:/ {print $3}') ;;
+    *) die "Unsupported package manager for verified releases: $PKG" ;;
+  esac
+  candidate=''
+  while IFS= read -r upstream; do
+    upstream=${upstream##*:}
+    if [[ "$upstream" == "$version" || "$upstream" == "$version-"* || "$upstream" == "$version+"* ]]; then
+      candidate=$upstream
+      break
+    fi
+  done <<< "$listing"
+  [[ -n "$candidate" ]] || die "Repository does not provide $package $version. Configure the vendor LTS/stable repository and retry; no older or alternate database will be installed."
+  case "$PKG" in
+    apt)
+      # Retain epochs from apt metadata in the exact package specification.
+      while IFS= read -r upstream; do
+        [[ "${upstream##*:}" == "$candidate" ]] && { candidate=$upstream; break; }
+      done <<< "$listing"
+      package_install "$package=$candidate"
+      if [[ "$component" == node ]] && ! command -v npm >/dev/null 2>&1; then
+        package_install "$package=$candidate" npm
+      fi
+      ;;
+    dnf|yum)
+      package_install "$package-$candidate"
+      if [[ "$component" == node ]] && ! command -v npm >/dev/null 2>&1; then package_install "$package-$candidate" npm; fi
+      ;;
+    pacman)
+      if [[ "$component" == node ]]; then package_install "$package" npm
+      else package_install "$package"; fi
+      ;;
+    zypper)
+      if [[ "$component" == node ]]; then package_install "$package=$candidate" npm
+      else package_install "$package=$candidate"; fi
+      ;;
+  esac
+}
+
 install_node() {
   if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-    ok "Node.js $(node --version) and npm $(npm --version) are already installed."
+    warn "Existing Node.js $(node --version) retained; installation does not check or apply security updates."
     return
   fi
   info "Installing Node.js and npm..."
-  case "$PKG" in
-    brew) package_install node ;;
-    *) package_install nodejs npm ;;
-  esac
+  install_production_package node nodejs
+  if ((!DRY_RUN)); then
+    [[ "$(node --version)" == "v$PRODUCTION_VERSION" ]] || die "Installed Node version differs from the selected LTS. Check PATH and package dependencies."
+    command -v npm >/dev/null 2>&1 || die "Node was installed but npm is missing. Install the matching npm package."
+  fi
   ok "Node.js installation finished."
 }
 
@@ -71,27 +193,30 @@ install_pm2() {
 
 install_mysql() {
   if command -v mysqld >/dev/null 2>&1 || command -v mariadbd >/dev/null 2>&1; then
-    ok "A MySQL-compatible server is already installed."
+    warn "Existing database retained; security patches and database upgrades require separate maintenance."
     return
   fi
   info "Installing MySQL..."
   case "$PKG" in
-    brew) package_install mysql; enable_service mysql ;;
-    apt) package_install default-mysql-server; enable_service mysql ;;
-    dnf|yum) package_install mysql-server; enable_service mysqld ;;
-    pacman) package_install mariadb; root_run mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql; enable_service mariadb ;;
-    zypper) package_install mysql-community-server; enable_service mysql ;;
+    brew)
+      install_production_package mysql mysql
+      if ((!DRY_RUN)); then enable_service "$PRODUCTION_FORMULA"; fi
+      ;;
+    apt) install_production_package mysql mysql-community-server; enable_service mysql ;;
+    dnf|yum) install_production_package mysql mysql-community-server; enable_service mysqld ;;
+    pacman) die "Arch's MariaDB package does not meet the MySQL LTS policy. Install Oracle MySQL LTS separately." ;;
+    zypper) install_production_package mysql mysql-community-server; enable_service mysql ;;
   esac
   ok "Database server installed. Run 'mysql_secure_installation' to harden it."
 }
 
 install_nginx() {
   if command -v nginx >/dev/null 2>&1; then
-    ok "Nginx is already installed."
+    warn "Existing Nginx retained; installation does not check or apply security updates."
     return
   fi
   info "Installing Nginx..."
-  package_install nginx
+  install_production_package nginx nginx
   enable_service nginx
   ok "Nginx installation finished."
 }
@@ -164,7 +289,7 @@ install_all() {
     component_installed "$index" || needed+=("$index")
   done
   if ((${#needed[@]} == 0)); then
-    ok "The complete NEEM stack is already installed. Nothing to do."
+    warn "The stack is already installed. Existing versions were not audited or updated; apply security updates separately."
     return
   fi
   rule "COMPLETE STACK PLAN"
@@ -179,10 +304,20 @@ install_all() {
   ok "The NEEM stack is installed."
 }
 
+installed_brew_formula() {
+  local component=$1 formula
+  local -a matches=()
+  while IFS= read -r formula; do
+    [[ "$formula" == "$component" || "$formula" == "$component@"* ]] && matches+=("$formula")
+  done < <(brew list --formula)
+  ((${#matches[@]} == 1)) || die "Cannot choose one installed $component formula. Remove the intended formula using brew uninstall."
+  printf '%s\n' "${matches[0]}"
+}
+
 remove_node() {
   warn "Removing Node.js may also make global npm tools such as PM2 unavailable."
   case "$PKG" in
-    brew) package_remove node ;;
+    brew) local formula; formula=$(installed_brew_formula node) || return; package_remove "$formula" ;;
     *) package_remove nodejs npm ;;
   esac
 }
@@ -197,9 +332,15 @@ remove_pm2() {
 remove_mysql() {
   warn "The database package will be removed; database files and configuration are intentionally retained."
   case "$PKG" in
-    brew) run brew services stop mysql || true; package_remove mysql ;;
-    apt) package_remove default-mysql-server ;;
-    dnf|yum) package_remove mysql-server ;;
+    brew) local formula; formula=$(installed_brew_formula mysql) || return; run brew services stop "$formula" || true; package_remove "$formula" ;;
+    apt)
+      if dpkg-query -W -f='${Status}' mysql-community-server 2>/dev/null | grep -q 'install ok installed'; then package_remove mysql-community-server
+      else package_remove default-mysql-server; fi
+      ;;
+    dnf|yum)
+      if rpm -q mysql-community-server >/dev/null 2>&1; then package_remove mysql-community-server
+      else package_remove mysql-server; fi
+      ;;
     pacman) package_remove mariadb ;;
     zypper) package_remove mysql-community-server ;;
   esac

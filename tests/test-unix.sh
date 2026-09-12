@@ -122,4 +122,53 @@ if grep -R -E 'â[„œ–—]' "$PROJECT_ROOT/neem.sh" "$PROJECT_ROOT/linux" >/
 fi
 pass 'Bash scripts retain valid UTF-8 symbols'
 
+# Parser tests use jq, the same small JSON tool bootstrapped by the installer.
+command -v jq >/dev/null 2>&1 || fail 'jq is required to run release-parser tests'
+node_metadata='[{"version":"v26.1.0","lts":false},{"version":"v24.9.0","lts":"Example"},{"version":"v24.10.0","lts":"Example"}]'
+assert_equal '24.10.0' "$(printf '%s' "$node_metadata" | parse_production_metadata node)" 'Node parser excludes current and sorts numerically'
+mysql_metadata='<option value="26.7">26.7.0</option><option value="9.7">9.7.2 LTS</option><option value="8.4">8.4.11 LTS</option>'
+assert_equal '9.7.2' "$(printf '%s' "$mysql_metadata" | parse_production_metadata mysql)" 'MySQL parser requires an LTS label'
+nginx_metadata='<h4>Mainline version</h4>nginx-1.31.5.tar.gz<h4>Stable version</h4>nginx-1.30.4.tar.gz<h4>Legacy versions</h4>nginx-1.28.3.tar.gz'
+assert_equal '1.30.4' "$(printf '%s' "$nginx_metadata" | parse_production_metadata nginx)" 'Nginx parser excludes mainline and legacy'
+for component in node mysql nginx; do
+  if printf '[]' | parse_production_metadata "$component" >/dev/null 2>&1; then fail "$component accepted missing metadata"; fi
+done
+pass 'missing metadata is rejected without fallback'
+(
+  # Simulate missing dependencies and make them available after one install.
+  ready=0
+  command() {
+    if [[ "$1" == -v && ( "$2" == curl || "$2" == jq ) ]]; then ((ready)); else builtin command "$@"; fi
+  }
+  package_install() {
+    [[ "$*" == 'curl jq' ]] || fail 'unexpected bootstrap packages'
+    ready=1
+  }
+  ensure_release_tools || fail 'dependency bootstrap failed'
+  ((ready)) || fail 'dependency installation did not run'
+  package_install() { fail 'available dependencies should not be reinstalled'; }
+  ensure_release_tools
+)
+pass 'missing release tools install automatically and are reused in the same run'
+
+# Package calls are mocked: these tests never install software.
+(
+  DRY_RUN=0
+  PKG=apt
+  production_version() { printf '24.10.0\n'; }
+  apt-cache() { printf 'nodejs | 1:24.10.0-1vendor1 | repository\n'; }
+  package_install() { printf 'INSTALL:%s\n' "$*"; }
+  result=$(install_production_package node nodejs)
+  assert_contains "$result" 'INSTALL:nodejs=1:24.10.0-1vendor1' 'APT preserves epoch and pins the verified upstream patch'
+  apt-cache() { printf 'nodejs | 26.1.0-1 | repository\n'; }
+  if result=$(install_production_package node nodejs 2>&1); then
+    fail 'wrong-channel repository package should be rejected'
+  fi
+  [[ "$result" != *INSTALL:* ]] || fail 'rejected package attempted installation'
+  DRY_RUN=1
+  production_version() { fail 'dry run must not fetch release metadata'; }
+  install_production_package node nodejs >/dev/null
+)
+pass 'production installer pins matching packages, rejects mismatches, and previews offline'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"

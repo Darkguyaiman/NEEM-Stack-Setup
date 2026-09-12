@@ -370,8 +370,8 @@ the live project folder; they do not keep a separate frozen copy of NEEM.
 - Registers certificate renewal using Certbot or win-acme.
 - Optionally installs `cloudflared` and registers a managed tunnel as a service.
 
-MySQL package names vary by distribution. On Arch Linux, the distribution's
-MySQL-compatible MariaDB package is used. Always run `mysql_secure_installation`
+MySQL installation requires Oracle's MySQL LTS package in the configured
+repository. Arch's MariaDB package is not substituted for MySQL. Always run `mysql_secure_installation`
 and create a dedicated, least-privilege database user for each application.
 
 ## Security notes
@@ -460,3 +460,38 @@ NEEM Stack Setup v1.1.0
 ## License
 
 MIT
+
+## Production release selection
+
+New Node.js, MySQL, and Nginx installs use native platform scripts to check vendor
+metadata at install time. Node.js selects the newest published LTS version;
+MySQL selects the newest LTS version listed on its Community download page;
+Nginx selects its current stable release (Nginx Open Source has no LTS channel).
+Patch versions are resolved each time rather than frozen in this repository.
+
+Release checks do not require Python. Windows uses its bundled curl.exe (or
+PowerShell HTTPS fallback) and built-in PowerShell JSON support.
+Linux/macOS automatically install curl and jq through the
+system package manager if missing, then continue in the same run. The checker
+needs HTTPS access to nodejs.org, dev.mysql.com, and nginx.org. Dry runs do not
+download metadata or install these tools. Glances (and Certbot on Linux) may
+still bring Python as their own automatically installed dependency.
+
+Windows requests the exact version through winget or Chocolatey. Linux checks
+repository versions and retains distribution revision suffixes. Homebrew uses
+`node@<major>` and `mysql@<major.minor>` and checks their patch versions. Add
+the displayed versioned Node and MySQL bin directories to your shell PATH on macOS.
+If vendor metadata cannot be verified or the required package is unavailable,
+installation stops instead of choosing an older version, MySQL Innovation,
+or MariaDB. Configure the appropriate vendor repository/channel and retry.
+NEEM does not automatically add third-party repositories. Arch MySQL setup
+requires a separate Oracle MySQL LTS installation.
+
+Other tools retain their existing non-prerelease package-manager, npm, pip,
+or official GitHub release sources. They are not certified vulnerability-free.
+This is a release-selection policy, not a vulnerability scanner or automatic
+update service. Existing components are retained and skipped by the installer;
+keep their security patches current separately. Back up and plan database
+major-version upgrades. LTS alone does not guarantee fewer vulnerabilities,
+and a distribution may backport fixes to an older upstream version that this
+strict policy still rejects.

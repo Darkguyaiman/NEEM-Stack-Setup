@@ -21,15 +21,86 @@ function Install-Package {
     } else {
         Invoke-Step { choco install $ChocoId -y } "choco install $ChocoId"
     }
-    Write-Ok "$Name installation finished. Open a new terminal if its command is not found yet."
+    if (-not $DryRun) { Update-ProcessPath }
+    Write-Ok "$Name installation finished."
+}
+
+function Update-ProcessPath {
+    $paths = @($env:Path, [Environment]::GetEnvironmentVariable('Path', 'Machine'),
+        [Environment]::GetEnvironmentVariable('Path', 'User'))
+    $env:Path = (($paths -join ';') -split ';' | Where-Object { $_ } | Select-Object -Unique) -join ';'
+}
+
+function Get-ProductionVersion {
+    param([string]$Component)
+    switch ($Component) {
+        node { $url = 'https://nodejs.org/dist/index.json' }
+        mysql { $url = 'https://dev.mysql.com/downloads/mysql/' }
+        nginx { $url = 'https://nginx.org/en/download.html' }
+        default { throw "Unknown component: $Component" }
+    }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    # Vendor sites may reject the older Windows PowerShell HTTP client.
+    # Modern Windows ships curl.exe; keep a built-in PowerShell fallback.
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        $lines = & curl.exe --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 30 $url
+        if ($LASTEXITCODE -ne 0) { throw "Could not download $Component release metadata. No fallback version selected." }
+        $content = $lines -join "`n"
+    } else {
+        $content = (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
+    }
+    return ConvertFrom-ProductionMetadata -Component $Component -Content $content
+}
+
+function ConvertFrom-ProductionMetadata {
+    param([string]$Component, [string]$Content)
+    $versions = @()
+    switch ($Component) {
+        node {
+            $versions = @(($Content | ConvertFrom-Json) | Where-Object {
+                $_.lts -is [string] -and $_.lts.Length -gt 0 -and $_.version -match '^v\d+\.\d+\.\d+$'
+            } | ForEach-Object { $_.version.Substring(1) })
+        }
+        mysql {
+            $versions = @([regex]::Matches($Content, '<option\b[^>]*>\s*(\d+\.\d+\.\d+)\s+LTS\s*</option>') |
+                ForEach-Object { $_.Groups[1].Value })
+        }
+        nginx {
+            $section = [regex]::Match($Content, '(?s)Stable version</h4>(.*?)<h4>')
+            if ($section.Success) {
+                $versions = @([regex]::Matches($section.Groups[1].Value, 'nginx-(\d+\.\d+\.\d+)\.tar\.gz') |
+                    ForEach-Object { $_.Groups[1].Value })
+            }
+        }
+        default { throw "Unknown component: $Component" }
+    }
+    if (-not $versions.Count) { throw "Cannot verify $Component release metadata. No fallback version selected." }
+    return ($versions | Sort-Object { [version]$_ } -Descending | Select-Object -First 1)
+}
+
+function Install-ProductionPackage {
+    param([string]$Component, [string]$WingetId, [string]$ChocoId)
+    if ($DryRun) {
+        Write-Info "Would verify and install the latest $Component LTS/stable patch, using an exact package version."
+        return
+    }
+    $version = Get-ProductionVersion $Component
+    Write-Info "Selected $Component $version (latest LTS/stable patch)."
+    if ($script:PackageManager -eq 'winget') {
+        Invoke-Step { winget install --id $WingetId --exact --version $version --accept-package-agreements --accept-source-agreements } "winget install $WingetId --version $version"
+    } else {
+        Invoke-Step { choco install $ChocoId --version $version -y } "choco install $ChocoId --version $version"
+    }
+    Update-ProcessPath
+    Write-Ok "$Component $version installation finished."
 }
 
 function Install-Node {
     if (Get-Command node -ErrorAction SilentlyContinue) {
-        Write-Ok "Node.js $(& node --version) is already installed."
+        Write-Warn "Existing Node.js $(& node --version) retained; installation does not check or apply security updates."
         return
     }
-    Install-Package -WingetId 'OpenJS.NodeJS.LTS' -ChocoId 'nodejs-lts' -Name 'Node.js'
+    Install-ProductionPackage -Component node -WingetId 'OpenJS.NodeJS.LTS' -ChocoId 'nodejs-lts'
 }
 
 function Install-PM2 {
@@ -43,10 +114,10 @@ function Install-PM2 {
 
 function Install-MySQL {
     if (Get-Command mysql -ErrorAction SilentlyContinue) {
-        Write-Ok 'A MySQL client is already installed.'
+        Write-Warn 'Existing MySQL installation retained; security patches and database upgrades require separate maintenance.'
         return
     }
-    Install-Package -WingetId 'Oracle.MySQL' -ChocoId 'mysql' -Name 'MySQL'
+    Install-ProductionPackage -Component mysql -WingetId 'Oracle.MySQL' -ChocoId 'mysql'
 }
 
 function Install-MySQLWorkbench {
@@ -60,10 +131,10 @@ function Install-MySQLWorkbench {
 
 function Install-Nginx {
     if (Get-Command nginx -ErrorAction SilentlyContinue) {
-        Write-Ok 'Nginx is already installed.'
+        Write-Warn 'Existing Nginx retained; installation does not check or apply security updates.'
         return
     }
-    Install-Package -WingetId 'nginxinc.nginx' -ChocoId 'nginx' -Name 'Nginx'
+    Install-ProductionPackage -Component nginx -WingetId 'nginxinc.nginx' -ChocoId 'nginx'
 }
 
 function Install-Cloudflared {
@@ -143,7 +214,7 @@ function Install-WinAcme {
 function Install-All {
     $needed = @(Get-ComponentCatalog | Where-Object { $_.Complete -and -not (Test-ComponentInstalled $_) })
     if (-not $needed.Count) {
-        Write-Ok 'The complete NEEM stack is already installed. Nothing to do.'
+        Write-Warn 'The stack is already installed. Existing versions were not audited or updated; apply security updates separately.'
         return
     }
     Write-Rule 'COMPLETE STACK PLAN'

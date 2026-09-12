@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'TestHelpers.ps1')
 
@@ -73,5 +73,33 @@ foreach ($module in $modules) {
     $bytes = [IO.File]::ReadAllBytes($module.FullName)
     Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) "$($module.Name) is PowerShell 5.1-safe UTF-8"
 }
+
+$nodeMetadata = '[{"version":"v26.1.0","lts":false},{"version":"v24.9.0","lts":"Example"},{"version":"v24.10.0","lts":"Example"}]'
+Assert-Equal '24.10.0' (ConvertFrom-ProductionMetadata node $nodeMetadata) 'native Node parser excludes current releases and sorts patches numerically'
+$mysqlMetadata = '<option value="26.7">26.7.0</option><option value="9.7">9.7.2 LTS</option><option value="8.4">8.4.11 LTS</option>'
+Assert-Equal '9.7.2' (ConvertFrom-ProductionMetadata mysql $mysqlMetadata) 'native MySQL parser requires an LTS label'
+$nginxMetadata = '<h4>Mainline version</h4>nginx-1.31.5.tar.gz<h4>Stable version</h4>nginx-1.30.4.tar.gz<h4>Legacy versions</h4>nginx-1.28.3.tar.gz'
+Assert-Equal '1.30.4' (ConvertFrom-ProductionMetadata nginx $nginxMetadata) 'native Nginx parser excludes mainline and legacy'
+foreach ($component in @('node','mysql','nginx')) {
+    $rejected = $false
+    try { ConvertFrom-ProductionMetadata $component '[]' } catch { $rejected = $true }
+    Assert-True $rejected "$component rejects missing release metadata"
+}
+
+# Mock external package commands to verify version arguments without installing.
+function Get-ProductionVersion { param($Component) return '24.10.0' }
+function winget { $script:PackageArguments = @($args); $global:LASTEXITCODE = 0 }
+function choco { $script:PackageArguments = @($args); $global:LASTEXITCODE = 0 }
+$DryRun = $false
+$script:PackageManager = 'winget'
+Install-ProductionPackage node OpenJS.NodeJS.LTS nodejs-lts
+Assert-True (($script:PackageArguments -join ' ') -match '--version 24.10.0') 'winget installs the resolved exact patch'
+$script:PackageManager = 'choco'
+Install-ProductionPackage node OpenJS.NodeJS.LTS nodejs-lts
+Assert-True (($script:PackageArguments -join ' ') -match '--version 24.10.0') 'Chocolatey installs the resolved exact patch'
+$DryRun = $true
+function Get-ProductionVersion { throw 'Dry run must not fetch metadata' }
+Install-ProductionPackage node OpenJS.NodeJS.LTS nodejs-lts
+Assert-True $true 'release selection dry run works without network access'
 
 Write-Host "`nWindows PowerShell suite passed ($script:TestCount assertions)." -ForegroundColor Green
