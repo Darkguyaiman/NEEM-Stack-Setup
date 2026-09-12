@@ -348,7 +348,13 @@ function New-MySQLDatabaseUser {
         } until ($validHost)
         if ($allowedHost -eq '%') { Write-Warn 'Host % allows this account to authenticate from any reachable address.' }
         do {
-            $securePassword = Read-HiddenPasteInput 'New user password:'
+            $validPassword = $false
+            $securePassword = Read-HiddenPasteInput 'New user password (minimum 12 characters):'
+            if ($securePassword.Length -lt 12) {
+                Write-Warn 'Password must contain at least 12 characters. Try again.'
+                $securePassword.Dispose()
+                continue
+            }
             $secureConfirmation = Read-HiddenPasteInput 'Confirm password:'
             $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
             $confirmationPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureConfirmation)
@@ -360,8 +366,7 @@ function New-MySQLDatabaseUser {
                 if ($confirmationPointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($confirmationPointer) }
             }
             $validPassword = $plainPassword.Length -ge 12 -and $plainPassword -eq $plainConfirmation
-            if ($plainPassword.Length -lt 12) { Write-Warn 'Use at least 12 characters.' }
-            elseif ($plainPassword -ne $plainConfirmation) { Write-Warn 'Passwords do not match.' }
+            if ($plainPassword -ne $plainConfirmation) { Write-Warn 'Passwords do not match.' }
             $plainConfirmation = $null
         } until ($validPassword)
     }

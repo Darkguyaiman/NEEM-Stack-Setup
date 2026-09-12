@@ -399,12 +399,16 @@ mysql_create_user() {
     done
     [[ "$allowed_host" == "%" ]] && warn "Host % allows this account to authenticate from any reachable address."
     while true; do
-      read_hidden_paste_input "New user password:"
+      read_hidden_paste_input "New user password (minimum 12 characters):"
       password=$HIDDEN_PASTE_VALUE; HIDDEN_PASTE_VALUE=""
+      if ((${#password} < 12)); then
+        warn 'Password must contain at least 12 characters. Try again.'
+        password=""
+        continue
+      fi
       read_hidden_paste_input "Confirm password:"
       password_again=$HIDDEN_PASTE_VALUE; HIDDEN_PASTE_VALUE=""
-      if ((${#password} < 12)); then warn "Use at least 12 characters."
-      elif [[ "$password" != "$password_again" ]]; then warn "Passwords do not match."
+      if [[ "$password" != "$password_again" ]]; then warn "Passwords do not match."
       else break
       fi
       password=""; password_again=""
