@@ -68,6 +68,43 @@ function Resolve-BackupDirectory {
     return [IO.Path]::GetFullPath($resolvedPath)
 }
 
+function Compress-MySQLDump {
+    param([string]$Source, [string]$Target)
+    $compressed = "$Target.partial"
+    if ((Test-Path -LiteralPath $Target) -or (Test-Path -LiteralPath $compressed)) {
+        throw 'Backup destination already exists.'
+    }
+    try {
+        $inputStream = [IO.File]::OpenRead($Source)
+        try {
+            $outputStream = [IO.File]::Open($compressed, [IO.FileMode]::CreateNew)
+            try {
+                $gzip = [IO.Compression.GZipStream]::new($outputStream, [IO.Compression.CompressionLevel]::Optimal, $true)
+                try { $inputStream.CopyTo($gzip) } finally { $gzip.Dispose() }
+            } finally { $outputStream.Dispose() }
+            $inputStream.Position = 0
+            $hash = [Security.Cryptography.SHA256]::Create()
+            try { $expected = [Convert]::ToBase64String($hash.ComputeHash($inputStream)) }
+            finally { $hash.Dispose() }
+        } finally { $inputStream.Dispose() }
+        $checkStream = [IO.File]::OpenRead($compressed)
+        try {
+            $gzip = [IO.Compression.GZipStream]::new($checkStream, [IO.Compression.CompressionMode]::Decompress)
+            try {
+                $hash = [Security.Cryptography.SHA256]::Create()
+                try { $actual = [Convert]::ToBase64String($hash.ComputeHash($gzip)) }
+                finally { $hash.Dispose() }
+            } finally { $gzip.Dispose() }
+        } finally { $checkStream.Dispose() }
+        if ($actual -ne $expected) { throw 'Compressed backup verification failed.' }
+        Move-Item -LiteralPath $compressed -Destination $Target -ErrorAction Stop
+    } catch {
+        Remove-Item -LiteralPath $compressed -Force -ErrorAction SilentlyContinue
+        throw "Compression failed. The SQL dump was retained at $Source. $($_.Exception.Message)"
+    }
+    Remove-Item -LiteralPath $Source -Force
+}
+
 function Backup-MySQLDatabase {
     $mysql = (Get-Command mysql -ErrorAction SilentlyContinue).Source
     if (-not $mysql) { $mysql = (Get-Command mariadb -ErrorAction SilentlyContinue).Source }
@@ -121,7 +158,7 @@ function Backup-MySQLDatabase {
     }
 
     $safeDatabase = $database -replace '[^A-Za-z0-9_.-]', '_'
-    $fileName = '{0}-{1}.sql' -f $safeDatabase, (Get-Date -Format 'yyyyMMdd-HHmmss')
+    $fileName = '{0}-{1}.sql.gz' -f $safeDatabase, (Get-Date -Format 'yyyyMMdd-HHmmss')
     $backupDirectory = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'NEEM Backups'
     Write-Rule 'STEP 4 OF 6 | CHOOSE SAVE LOCATION'
     Write-Theme -Text "  The dump will be named: $fileName" -Role Primary
@@ -137,7 +174,7 @@ function Backup-MySQLDatabase {
         }
     }
     $finalFile = Join-Path $backupDirectory $fileName
-    $partialFile = "$finalFile.partial"
+    $partialFile = "$($finalFile.Substring(0, $finalFile.Length - 3)).partial"
     $dumpArgs = @("--host=$hostName", "--port=$port", "--user=$user", '--password', '--protocol=TCP',
         '--default-character-set=utf8mb4', '--single-transaction', '--quick', '--hex-blob',
         '--complete-insert', '--skip-lock-tables', '--skip-comments', '--tz-utc')
@@ -150,7 +187,6 @@ function Backup-MySQLDatabase {
 
     Write-Rule 'STEP 5 OF 6 | CREATE AND VALIDATE DUMP'
     Write-Theme -Text '  For safety, MySQL asks for the password again before writing the dump.' -Role Muted
-    Write-Theme -Text "> $([IO.Path]::GetFileName($dump)) <portable options> --result-file=`"$partialFile`" $database" -Role Accent
     if ($DryRun) {
         Write-Info "Would create: $finalFile"
     } else {
@@ -170,20 +206,14 @@ function Backup-MySQLDatabase {
             Remove-Item -LiteralPath $partialFile -Force -ErrorAction SilentlyContinue
             throw 'Backup validation failed; the incomplete dump was removed.'
         }
-        Move-Item -LiteralPath $partialFile -Destination $finalFile
-        Write-Ok "Validated UTF-8 dump created: $finalFile"
+        Compress-MySQLDump -Source $partialFile -Target $finalFile
+        Write-Ok "Backup saved: $finalFile"
     }
 
     Write-Rule 'STEP 6 OF 6 | DOWNLOAD THE DUMP'
-    Write-Theme -Text '  Tell us how this server is reached over SSH, then run the matching command' -Role Muted
-    Write-Theme -Text '  on the computer that should receive the file.' -Role Muted
-    Write-Host ''
+    Write-Info 'Run the matching command on your own computer to save the backup in Downloads.'
     $sshHost = Get-BackupSshHost
-    Write-Info "Detected server address: $sshHost. Press Enter to use it, or enter a different IP/MagicDNS name."
     $sshUser = $env:USERNAME
-    Write-Info 'Use the server IP address OR a hostname your receiving computer can reach.'
-    Write-Info 'Examples: 203.0.113.10, a Tailscale IP, or a DNS/MagicDNS name.'
-    Write-Info 'For a Tailscale address or MagicDNS name, the receiving computer must have access to that tailnet.'
     if (-not $DryRun) {
         $answer = Read-Host "Server IP or hostname (including MagicDNS) [$sshHost]"
         if ($answer) { $sshHost = $answer }
@@ -193,14 +223,15 @@ function Backup-MySQLDatabase {
     $remotePath = $finalFile.Replace('\', '/')
     if ($sshHost.Contains(':') -and -not $sshHost.StartsWith('[')) { $sshHost = "[$sshHost]" }
     $source = "${sshUser}@${sshHost}:$remotePath"
+    $psSource = $source.Replace("'", "''")
+    $unixSource = $source.Replace("'", ("'" + '"' + "'" + '"' + "'"))
     Write-Host ''
     Write-Theme -Text '  Windows PowerShell:' -Role Primary
-    Write-Theme -Text "  scp `"$source`" `"`$HOME\Downloads\`"" -Role Secondary
+    Write-Theme -Text "  scp '$psSource' `"`$HOME/Downloads/$fileName`"" -Role Secondary
     Write-Theme -Text '  macOS:' -Role Primary
-    Write-Theme -Text "  scp `"$source`" ~/Downloads/" -Role Secondary
+    Write-Theme -Text "  scp '$unixSource' `"`$HOME/Downloads/$fileName`"" -Role Secondary
     Write-Theme -Text '  Linux:' -Role Primary
-    Write-Theme -Text "  scp `"$source`" ~/Downloads/" -Role Secondary
-    Write-Info 'Run the matching command on the computer that will receive the file.'
+    Write-Theme -Text "  scp '$unixSource' `"`$HOME/Downloads/$fileName`"" -Role Secondary
 }
 
 function Select-MySQLUserAction {

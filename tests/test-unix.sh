@@ -507,4 +507,19 @@ pass 'password changes validate early, preserve account host, and respect cancel
 )
 pass 'backup download address is detected automatically with fallbacks'
 
+(
+  fixture=$(mktemp -d)
+  trap 'rm -rf -- "$fixture"' EXIT
+  printf 'SELECT "hello world";\n' > "$fixture/dump.sql"
+  compress_mysql_dump "$fixture/dump.sql" "$fixture/dump.sql.gz"
+  [[ ! -e "$fixture/dump.sql" ]] || fail 'raw dump remains after successful compression'
+  assert_equal 'SELECT "hello world";' "$(gzip -dc "$fixture/dump.sql.gz")" 'gzip preserves SQL content'
+  printf 'retained' > "$fixture/dump.sql"
+  if compress_mysql_dump "$fixture/dump.sql" "$fixture/dump.sql.gz"; then fail 'existing backup overwritten'; fi
+  gzip() { return 1; }
+  if compress_mysql_dump "$fixture/dump.sql" "$fixture/failed.sql.gz"; then fail 'compression failure reported success'; fi
+  [[ -f "$fixture/dump.sql" && ! -e "$fixture/failed.sql.gz.partial" ]] || fail 'failed compression lost SQL or left incomplete archive'
+)
+pass 'gzip backups roundtrip and retain SQL on failure'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"

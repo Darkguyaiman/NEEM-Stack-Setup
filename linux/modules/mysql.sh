@@ -93,6 +93,18 @@ detect_backup_ssh_host() {
   hostname -f 2>/dev/null || hostname
 }
 
+compress_mysql_dump() {
+  local source=$1 target=$2 compressed="$2.partial"
+  [[ ! -e "$target" && ! -e "$compressed" ]] || { warn 'Backup destination already exists.'; return 1; }
+  if ! (umask 077; gzip -c -- "$source" > "$compressed") || ! gzip -t -- "$compressed"; then
+    rm -f -- "$compressed"
+    warn "Compression failed. The SQL dump was retained at $source."
+    return 1
+  fi
+  mv -- "$compressed" "$target" || return 1
+  rm -f -- "$source"
+}
+
 mysql_backup() {
   local mysql_cmd dump_cmd dump_help host port user database choice include_schema answer
   local backup_dir timestamp safe_database partial_file final_file remote_host remote_user remote_path database_output argument
@@ -161,7 +173,7 @@ mysql_backup() {
   safe_database=${database//[^A-Za-z0-9_.-]/_}
   timestamp=$(date '+%Y%m%d-%H%M%S')
   backup_dir="${HOME}/neem-backups"
-  final_file="${safe_database}-${timestamp}.sql"
+  final_file="${safe_database}-${timestamp}.sql.gz"
   rule "STEP 4 OF 6 | CHOOSE SAVE LOCATION"
   printf '%s  The dump will be named:%s %s\n' "$CREAM" "$RESET" "$final_file"
   printf '%s  Windows and Unix-style paths are accepted. Press Enter to use the default.%s\n' "$MUTED" "$RESET"
@@ -173,7 +185,7 @@ mysql_backup() {
     [[ ! -f "$backup_dir" ]] || { warn "The destination is a file, not a directory: $backup_dir"; return 1; }
   fi
   final_file="$backup_dir/$final_file"
-  partial_file="${final_file}.partial"
+  partial_file="${final_file%.gz}.partial"
 
   dump_args=()
   for argument in "${connection_args[@]}"; do
@@ -196,10 +208,14 @@ mysql_backup() {
   if [[ " ${connection_args[*]} " == *' --password '* ]]; then
     info 'MySQL will ask for the password again before writing the dump.'
   fi
-  printf '%s+%s %s <portable options> --result-file=%q %q\n' "$BLUE" "$RESET" "$(basename "$dump_cmd")" "$partial_file" "$database"
   if ((DRY_RUN)); then
     info "Would create: $final_file"
   else
+    if ! command -v gzip >/dev/null 2>&1; then
+      [[ -n "$PKG" ]] || detect_platform
+      package_install gzip || return 1
+    fi
+    info 'Creating compressed backup...'
     mkdir -p "$backup_dir"
     chmod 700 "$backup_dir" 2>/dev/null || true
     rm -f -- "$partial_file"
@@ -215,19 +231,14 @@ mysql_backup() {
       return 1
     fi
     chmod 600 "$partial_file" 2>/dev/null || true
-    mv -- "$partial_file" "$final_file"
-    ok "Validated UTF-8 dump created: $final_file"
+    compress_mysql_dump "$partial_file" "$final_file" || return 1
+    ok "Backup saved: $final_file"
   fi
 
   rule "STEP 6 OF 6 | DOWNLOAD THE DUMP"
-  printf '%s  Tell us how this server is reached over SSH, then run the matching command%s\n' "$MUTED" "$RESET"
-  printf '%s  on the computer that should receive the file.%s\n\n' "$MUTED" "$RESET"
+  info 'Run the matching command on your own computer to save the backup in Downloads.'
   remote_user=$(id -un)
   remote_host=$(detect_backup_ssh_host)
-  info "Detected server address: $remote_host. Press Enter to use it, or enter a different IP/MagicDNS name."
-  info 'Use the server IP address OR a hostname your receiving computer can reach.'
-  info 'Examples: 203.0.113.10, 100.64.0.10 (Tailscale IP), or my-server (DNS/MagicDNS name).'
-  info 'For a Tailscale address or MagicDNS name, the receiving computer must have access to that tailnet.'
   if ((!DRY_RUN)); then
     read -r -p "Server IP or hostname (including MagicDNS) [$remote_host]: " answer
     remote_host=${answer:-$remote_host}
@@ -237,10 +248,11 @@ mysql_backup() {
   remote_path=$final_file
   if [[ "$remote_host" == *:* && "$remote_host" != \[*\] ]]; then remote_host="[$remote_host]"; fi
   printf '\n'
-  printf '%s  Windows PowerShell:%s\n  scp %q "$HOME\\Downloads\\"\n' "$CREAM" "$RESET" "$remote_user@$remote_host:$remote_path"
-  printf '%s  macOS:%s\n  scp %q ~/Downloads/\n' "$CREAM" "$RESET" "$remote_user@$remote_host:$remote_path"
-  printf '%s  Linux:%s\n  scp %q ~/Downloads/\n' "$CREAM" "$RESET" "$remote_user@$remote_host:$remote_path"
-  info "Run the matching command on the computer that will receive the file."
+  local scp_source="$remote_user@$remote_host:$remote_path" filename="${final_file##*/}" ps_source
+  ps_source=${scp_source//\'/\'\'}
+  printf "%s  Windows PowerShell:%s\n  scp '%s' \"\$HOME/Downloads/%s\"\n" "$CREAM" "$RESET" "$ps_source" "$filename"
+  printf '%s  macOS:%s\n  scp %q "$HOME/Downloads/%s"\n' "$CREAM" "$RESET" "$scp_source" "$filename"
+  printf '%s  Linux:%s\n  scp %q "$HOME/Downloads/%s"\n' "$CREAM" "$RESET" "$scp_source" "$filename"
 }
 
 MYSQL_USER_ACTION=""

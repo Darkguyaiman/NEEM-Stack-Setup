@@ -133,4 +133,29 @@ Assert-True $true 'release selection dry run works without network access'
     Assert-True ($script:PasswordSql.Contains("long-password''with\quote")) 'Windows password change escapes quotes without corrupting backslashes'
 }
 
+& {
+    $fixture = Join-Path ([IO.Path]::GetTempPath()) ('neem gzip ' + [guid]::NewGuid())
+    [void][IO.Directory]::CreateDirectory($fixture)
+    $raw = Join-Path $fixture 'backup.sql'
+    $archive = "$raw.gz"
+    try {
+        [IO.File]::WriteAllText($raw, 'SELECT ''hello world'';')
+        Compress-MySQLDump -Source $raw -Target $archive
+        Assert-True (-not (Test-Path -LiteralPath $raw)) 'successful gzip removes raw SQL'
+        $stream = [IO.File]::OpenRead($archive)
+        $gzip = [IO.Compression.GZipStream]::new($stream, [IO.Compression.CompressionMode]::Decompress)
+        $reader = [IO.StreamReader]::new($gzip)
+        try { Assert-Equal 'SELECT ''hello world'';' $reader.ReadToEnd() 'gzip backup preserves SQL content' }
+        finally { $reader.Dispose(); $gzip.Dispose(); $stream.Dispose() }
+        [IO.File]::WriteAllText($raw, 'retained')
+        $failed = $false
+        try { Compress-MySQLDump -Source $raw -Target $archive } catch { $failed = $true }
+        Assert-True $failed 'gzip refuses to overwrite an existing backup'
+        Assert-True (Test-Path -LiteralPath $raw) 'failed gzip retains raw SQL'
+    } finally {
+        Remove-Item -LiteralPath $raw, $archive -Force -ErrorAction SilentlyContinue
+        [IO.Directory]::Delete($fixture)
+    }
+}
+
 Write-Host "`nWindows PowerShell suite passed ($script:TestCount assertions)." -ForegroundColor Green

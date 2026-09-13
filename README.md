@@ -133,7 +133,9 @@ The dump uses `utf8mb4`, a consistent transaction, hexadecimal binary values,
 complete column lists, and omits source-server metadata that commonly causes
 cross-machine restore errors. Routines, events, and triggers are included with
 CREATE statements. NEEM writes to a temporary `.partial` file, checks that the
-result is non-empty valid UTF-8, and only then publishes the `.sql` file. Before
+result is non-empty valid UTF-8, then compresses and verifies the `.sql.gz` archive
+before publishing it. Unix installs gzip automatically if needed; Windows uses
+built-in .NET compression. Failed compression retains the SQL dump. Before
 creating it, NEEM prompts for a destination directory. Press **Enter** to use
 `~/neem-backups` on Linux/macOS or `Documents\NEEM Backups` on Windows. The
 prompt accepts paths with spaces, `~`, native paths, and Windows or Unix-style
