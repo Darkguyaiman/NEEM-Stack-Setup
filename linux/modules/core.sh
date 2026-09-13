@@ -243,31 +243,32 @@ update_neem() {
   fi
   if [[ -e "$SCRIPT_DIR/.git" ]] && command -v git >/dev/null 2>&1; then
     info "Checking GitHub for updates..."
-    run git -C "$SCRIPT_DIR" fetch origin main || return 1
+    package_step '' run git -C "$SCRIPT_DIR" fetch origin main || return 1
     current=$(git -C "$SCRIPT_DIR" rev-parse HEAD) || return 1
     latest=$(git -C "$SCRIPT_DIR" rev-parse FETCH_HEAD) || return 1
     changes=$(git -C "$SCRIPT_DIR" status --porcelain) || return 1
     stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
     if [[ -n "$changes" ]]; then
-      run git -c user.name=NEEM -c user.email=neem@localhost -C "$SCRIPT_DIR" stash push --include-untracked -m "NEEM automatic update backup $stamp" || return 1
+      package_step '' run git -c user.name=NEEM -c user.email=neem@localhost -C "$SCRIPT_DIR" stash push --include-untracked -m "NEEM automatic update backup $stamp" || return 1
       backup=$(git -C "$SCRIPT_DIR" rev-parse refs/stash) || return 1
       info "Local edits saved automatically in Git stash $backup."
     fi
     if [[ "$current" == "$latest" ]]; then
-      ok "NEEM v$VERSION is already current."
+      new_version=$(tr -d '\r\n' < "$SCRIPT_DIR/VERSION")
+      ok "NEEM v$new_version is up to date."
+      return
     else
       if git -C "$SCRIPT_DIR" merge-base --is-ancestor "$current" "$latest"; then
-        run git -C "$SCRIPT_DIR" merge --ff-only "$latest" || return 1
+        package_step 'Applying update' run git -C "$SCRIPT_DIR" merge --ff-only "$latest" || return 1
       else
         ancestor_status=$?
         ((ancestor_status == 1)) || return "$ancestor_status"
         backup="neem-backup-$stamp"
-        run git -C "$SCRIPT_DIR" branch "$backup" "$current" || return 1
+        package_step '' run git -C "$SCRIPT_DIR" branch "$backup" "$current" || return 1
         info "Local commits saved on branch $backup."
-        run git -C "$SCRIPT_DIR" reset --keep "$latest" || return 1
+        package_step 'Applying update' run git -C "$SCRIPT_DIR" reset --keep "$latest" || return 1
       fi
       new_version=$(tr -d '\r\n' < "$SCRIPT_DIR/VERSION")
-      ok "NEEM was updated to v$new_version."
     fi
   else
     warn "This copy was downloaded without Git history."
@@ -277,11 +278,11 @@ update_neem() {
     temp_root=$(mktemp -d)
     archive="$temp_root/neem-main.zip"
     info "Downloading the latest NEEM release files from GitHub..."
-    run curl --fail --location --output "$archive" "$archive_url"
-    run unzip -q "$archive" -d "$temp_root"
+    package_step '' run curl --fail --location --output "$archive" "$archive_url" || return 1
+    package_step '' run unzip -q "$archive" -d "$temp_root" || return 1
     source=$(find "$temp_root" -mindepth 1 -maxdepth 1 -type d -name 'NEEM-Stack-Setup-*' | head -n1)
     [[ -n "$source" && -r "$source/VERSION" ]] || die "The downloaded NEEM archive was not valid."
-    run cp -R "$source/." "$SCRIPT_DIR/"
+    package_step 'Applying update' run cp -R "$source/." "$SCRIPT_DIR/" || return 1
     new_version=$(tr -d '\r\n' < "$SCRIPT_DIR/VERSION")
     temp_base=${TMPDIR:-/tmp}
     temp_base=${temp_base%/}
@@ -289,8 +290,8 @@ update_neem() {
       "$temp_base"/*) rm -rf -- "$temp_root" ;;
       *) warn "Temporary update files were retained at $temp_root." ;;
     esac
-    ok "NEEM was updated to v$new_version."
   fi
-  run bash "$SCRIPT_DIR/install-neem-command.sh"
-  info "Run neem again to use the updated version."
+  package_step '' run bash "$SCRIPT_DIR/install-neem-command.sh" || return 1
+  ok "Updated to NEEM v$new_version."
+  info 'Run neem to continue.'
 }

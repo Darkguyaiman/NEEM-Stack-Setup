@@ -8,7 +8,7 @@ package_step() {
     sudo -v || return 1
   fi
   log=$(mktemp "${TMPDIR:-/tmp}/neem-step.XXXXXX") || return 1
-  printf '    %s...\n' "$label"
+  [[ -z "$label" ]] || printf '    %s...\n' "$label"
   if "$@" > "$log" 2>&1; then
     if grep -Eqi 'Service restarts being deferred|reboot required|restart required' "$log"; then
       warn 'Some services or the system need a restart after these changes.'
@@ -16,7 +16,7 @@ package_step() {
     rm -f -- "$log"
   else
     status=$?
-    warn "$label failed (exit $status)."
+    warn "${label:-Update step} failed (exit $status)."
     tail -n 12 "$log" >&2
     warn "Full output: $log"
     return "$status"

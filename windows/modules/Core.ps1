@@ -263,7 +263,7 @@ function Update-NEEM {
     if ((Test-Path -LiteralPath (Join-Path $script:ProjectRoot '.git')) -and
         (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Info 'Checking GitHub for updates...'
-        Invoke-Step { & git -C $script:ProjectRoot fetch origin main } 'git fetch origin main'
+        Invoke-PackageStep -QuietProgress -Action { & git -C $script:ProjectRoot fetch origin main } 'git fetch origin main'
         $current = (& git -C $script:ProjectRoot rev-parse HEAD).Trim()
         if ($LASTEXITCODE -ne 0) { throw 'Unable to read the current Git commit.' }
         $latest = (& git -C $script:ProjectRoot rev-parse FETCH_HEAD).Trim()
@@ -272,26 +272,27 @@ function Update-NEEM {
         if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the Git working tree.' }
         $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '-' + [guid]::NewGuid().ToString('N')
         if ($changes.Count) {
-            Invoke-Step { & git -c user.name=NEEM -c user.email=neem@localhost -C $script:ProjectRoot stash push --include-untracked -m "NEEM automatic update backup $stamp" } 'Save local edits automatically'
+            Invoke-PackageStep -QuietProgress -Action { & git -c user.name=NEEM -c user.email=neem@localhost -C $script:ProjectRoot stash push --include-untracked -m "NEEM automatic update backup $stamp" } 'Save local edits automatically'
             $backup = (& git -C $script:ProjectRoot rev-parse refs/stash).Trim()
             if ($LASTEXITCODE -ne 0) { throw 'Unable to read the automatic backup reference.' }
             Write-Info "Local edits saved automatically in Git stash $backup."
         }
         if ($current -eq $latest) {
-            Write-Ok "NEEM v$script:Version is already current."
+            Write-Ok "NEEM v$script:Version is up to date."
+            return
         } else {
             & git -C $script:ProjectRoot merge-base --is-ancestor $current $latest
             $ancestorStatus = $LASTEXITCODE
             if ($ancestorStatus -eq 0) {
-                Invoke-Step { & git -C $script:ProjectRoot merge --ff-only $latest } 'Apply the latest NEEM update'
+                Invoke-PackageStep -QuietProgress -Action { & git -C $script:ProjectRoot merge --ff-only $latest } 'Apply the latest NEEM update'
             } elseif ($ancestorStatus -eq 1) {
                 $backup = "neem-backup-$stamp"
-                Invoke-Step { & git -C $script:ProjectRoot branch $backup $current } 'Back up local commits'
+                Invoke-PackageStep -QuietProgress -Action { & git -C $script:ProjectRoot branch $backup $current } 'Back up local commits'
                 Write-Info "Local commits saved on branch $backup."
-                Invoke-Step { & git -C $script:ProjectRoot reset --keep $latest } 'Apply the latest NEEM update'
+                Invoke-PackageStep -QuietProgress -Action { & git -C $script:ProjectRoot reset --keep $latest } 'Apply the latest NEEM update'
             } else { throw 'Unable to compare the local and fetched Git commits.' }
             $newVersion = (Get-Content -LiteralPath (Join-Path $script:ProjectRoot 'VERSION') -Raw).Trim()
-            Write-Ok "NEEM was updated to v$newVersion."
+
         }
     } else {
         Write-Warn 'This copy was downloaded without Git history.'
@@ -312,15 +313,16 @@ function Update-NEEM {
                 Copy-Item -LiteralPath $item.FullName -Destination $script:ProjectRoot -Recurse -Force
             }
             $newVersion = (Get-Content -LiteralPath (Join-Path $script:ProjectRoot 'VERSION') -Raw).Trim()
-            Write-Ok "NEEM was updated to v$newVersion."
+
         } finally {
             if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
         }
     }
     $commandInstaller = Join-Path $script:ProjectRoot 'Install-NEEM-Command.ps1'
     if (Test-Path -LiteralPath $commandInstaller) {
-        & $commandInstaller
+        Invoke-PackageStep -QuietProgress -Action { & $commandInstaller } -Display 'Refresh NEEM commands'
     }
-    Write-Info 'Run neem again to use the updated version.'
+    Write-Ok "Updated to NEEM v$newVersion."
+    Write-Info 'Run neem to continue.'
 }
 

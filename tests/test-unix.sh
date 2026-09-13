@@ -289,6 +289,9 @@ pass 'PM2 removal recovers when Node was already removed'
   assert_equal '2.0.0' "$(cat "$SCRIPT_DIR/VERSION")" 'dirty checkout updates automatically'
   assert_equal 'local-edit' "$(git -C "$SCRIPT_DIR" show 'stash@{0}:VERSION')" 'tracked edits remain in the automatic stash'
   assert_equal 'personal-notes' "$(git -C "$SCRIPT_DIR" show 'stash@{0}^3:notes.txt')" 'untracked files remain in the automatic stash'
+  result=$(update_neem)
+  assert_contains "$result" 'NEEM v2.0.0 is up to date.' 'current checkout shows a concise version result'
+  [[ "$result" != *'git -C'* && "$result" != *'install-neem-command.sh'* && "$result" != *'Run neem'* ]] || fail 'already-current update showed unnecessary setup instructions'
   printf 'local-commit\n' > "$SCRIPT_DIR/VERSION"
   git -C "$SCRIPT_DIR" -c user.name=Test -c user.email=test@example.invalid commit -qam local
   local_commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
@@ -382,5 +385,46 @@ pass 'MySQL user management supports local socket authentication without a root 
   assert_contains "$result" 'GRANT ALL PRIVILEGES ON `portfolio`.*' 'new user remains scoped to the selected database'
 )
 pass 'empty database setup waits for confirmation before applying SQL'
+
+(
+  env_fixture=$(mktemp)
+  trap 'rm -f -- "$env_fixture"' EXIT
+  printf 'DATABASE_URL\0value with "quotes" and $symbols\0' > "$env_fixture"
+  result=$(write_pm2_app_config "$env_fixture" example '/tmp/app folder' /usr/bin/npm start 1 512M 3000 production)
+  assert_equal 'fork' "$(printf '%s' "$result" | jq -r '.apps[0].exec_mode')" 'npm wizard configs use fork mode'
+  assert_equal 'value with "quotes" and $symbols' "$(printf '%s' "$result" | jq -r '.apps[0].env.DATABASE_URL')" 'environment values survive JSON encoding unchanged'
+  assert_equal '3000' "$(printf '%s' "$result" | jq -r '.apps[0].env.PORT')" 'wizard config sets PORT'
+  assert_equal 'start' "$(printf '%s' "$result" | jq -r '.apps[0].args[1]')" 'npm script is passed as a literal argument'
+  result=$(write_pm2_app_config "$env_fixture" example /tmp/app /tmp/app/server.js '' 2 1G 4000 production)
+  assert_equal 'cluster' "$(printf '%s' "$result" | jq -r '.apps[0].exec_mode')" 'direct Node supports multiple cluster instances'
+  DRY_RUN=1
+  pm2() { fail 'dry-run wizard must not call PM2'; }
+  pm2_app_guide >/dev/null
+)
+pass 'PM2 wizard generates valid process settings and preserves hidden values'
+(
+  wizard_fixture=$(mktemp -d)
+  trap 'rm -rf -- "$wizard_fixture"' EXIT
+  mkdir -p "$wizard_fixture/project"
+  printf '// example app\n' > "$wizard_fixture/project/server.js"
+  XDG_STATE_HOME="$wizard_fixture/state"
+  DRY_RUN=0
+  pm2() {
+    if [[ "$1" == jlist ]]; then printf '[]\n'
+    elif [[ "$1" == start ]]; then printf '%s' "$2" > "$wizard_fixture/started"; fi
+  }
+  ensure_release_tools() { :; }
+  show_pm2_apps() { :; }
+  confirm() { return 1; }
+  wizard_input=$(printf '%s\n' "$wizard_fixture/project" example 2 server.js 3000 production '' 1 512M)
+  pm2_app_guide <<< "$wizard_input" >/dev/null
+  [[ ! -e "$wizard_fixture/started" && ! -e "$XDG_STATE_HOME" ]] || fail 'cancelled wizard changed PM2 or saved configuration'
+  confirm() { [[ "$1" == 'Save this configuration and start the app?' ]]; }
+  pm2_app_guide <<< "$wizard_input" >/dev/null
+  config="$XDG_STATE_HOME/neem/pm2/example.ecosystem.json"
+  assert_equal "$config" "$(cat "$wizard_fixture/started")" 'confirmed wizard starts the reviewed configuration'
+  [[ -f "$config" ]] || fail 'confirmed wizard did not save its config'
+)
+pass 'PM2 wizard starts only after confirmation and cancellation leaves no config'
 
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"

@@ -1,7 +1,7 @@
 # Main command palette, action dispatch, and command-line usage.
-MENU_IDS=(install remove complete startup domain ssl tunnel backup dbuser health creator exit)
-MENU_LABELS=("Install components" "Remove components" "Install complete stack" "Configure PM2 startup" "Connect a domain" "Enable HTTPS" "Configure Cloudflare Tunnel" "Back up a MySQL database" "Manage MySQL users" "Inspect stack health" "Creator and support" "Exit NEEM")
-MENU_HINTS=("Choose one or several tools for this machine." "Select installed tools you no longer need." "Install Node.js, PM2, MySQL, Nginx and utilities." "Restore your Node.js apps after a restart." "Route a hostname through Nginx to a PM2 app." "Request and renew a free TLS certificate." "Publish a local app without opening inbound ports." "Create a portable, validated SQL dump and get download commands." "Create database users or view every account on the server." "See what is installed and validate Nginx." "View Mohamed Aiman's links and ASCII portrait." "Return to your terminal.")
+MENU_IDS=(install remove complete app startup domain ssl tunnel backup dbuser health creator exit)
+MENU_LABELS=("Install components" "Remove components" "Install complete stack" "Start an app with PM2" "Configure PM2 startup" "Connect a domain" "Enable HTTPS" "Configure Cloudflare Tunnel" "Back up a MySQL database" "Manage MySQL users" "Inspect stack health" "Creator and support" "Exit NEEM")
+MENU_HINTS=("Choose one or several tools for this machine." "Select installed tools you no longer need." "Install Node.js, PM2, MySQL, Nginx and utilities." "Guided app setup: port, environment and process settings." "Restore your Node.js apps after a restart." "Route a hostname through Nginx to a PM2 app." "Request and renew a free TLS certificate." "Publish a local app without opening inbound ports." "Create a portable, validated SQL dump and get download commands." "Create database users or view every account on the server." "See what is installed and validate Nginx." "View Mohamed Aiman's links and ASCII portrait." "Return to your terminal.")
 MAIN_ACTION=""
 
 select_main_action() {
@@ -59,6 +59,7 @@ main_menu() {
       install) component_workflow Install; pause ;;
       remove) component_workflow Remove; pause ;;
       complete) install_all; pause ;;
+      app) pm2_app_guide; pause ;;
       startup) pm2_startup; pause ;;
       domain) configure_domain; pause ;;
       ssl) enable_ssl; pause ;;

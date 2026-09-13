@@ -213,6 +213,155 @@ configure_domain() {
   fi
 }
 
+write_pm2_app_config() {
+  local env_file=$1 name=$2 project=$3 script=$4 npm_script=$5 instances=$6 memory=$7 port=$8 environment=$9
+  jq -n --rawfile values "$env_file" --arg name "$name" --arg cwd "$project" \
+    --arg script "$script" --arg npm_script "$npm_script" --argjson instances "$instances" \
+    --arg memory "$memory" --arg port "$port" --arg environment "$environment" '
+    ($values | split("\u0000") | .[:-1]) as $pairs |
+    (reduce range(0; $pairs|length; 2) as $i ({}; .[$pairs[$i]] = $pairs[$i+1])) as $extra |
+    {apps:[{name:$name,cwd:$cwd,script:$script,
+      args:(if $npm_script == "" then [] else ["run",$npm_script] end),
+      interpreter:(if $npm_script == "" then "node" else "none" end),
+      exec_mode:(if $instances > 1 then "cluster" else "fork" end),
+      instances:$instances,max_memory_restart:$memory,autorestart:true,
+      exp_backoff_restart_delay:100,min_uptime:10000,max_restarts:10,
+      kill_timeout:5000,watch:false,time:true,
+      env:($extra + {PORT:$port,NODE_ENV:$environment})}]}'
+}
+
+pm2_app_guide() (
+  local project name kind entry script npm_script='' port environment instances=1 memory
+  local key value stage destination config processes install_deps=0 build_app=0
+  umask 077
+  rule 'START AN APP WITH PM2'
+  if ((DRY_RUN)); then
+    info 'Would guide project, npm/Node entry, port, environment, memory and instances; review before starting.'
+    return
+  fi
+  command -v pm2 >/dev/null 2>&1 || install_pm2 || return 1
+  ensure_release_tools || return 1
+  stage=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$stage"' EXIT
+  : > "$stage/environment"
+  rule '1/5  PROJECT'
+  while true; do
+    read -r -p "App folder [$PWD] (q to cancel): " project || return
+    [[ "$project" != q ]] || return 0
+    project=${project:-$PWD}
+    project=${project/#\~/$HOME}
+    [[ -d "$project" ]] && { project=$(cd -- "$project" && pwd -P); break; }
+    warn 'That folder does not exist.'
+  done
+  while true; do
+    read -r -p 'App name (letters, numbers, underscores, hyphens): ' name || return
+    [[ "$name" =~ ^[A-Za-z][A-Za-z0-9_-]{0,63}$ ]] || { warn 'Enter a name starting with a letter, up to 64 characters.'; continue; }
+    processes=$(pm2 jlist) || return 1
+    printf '%s' "$processes" | jq -e 'type == "array"' >/dev/null || { warn 'Could not read the PM2 app list.'; return 1; }
+    if printf '%s' "$processes" | jq -e --arg name "$name" 'any(.[]; .name == $name)' >/dev/null; then
+      warn 'PM2 already has that name. Choose another name.'
+    else break; fi
+  done
+  rule '2/5  START COMMAND'
+  info '1: npm script (recommended for Next.js and similar projects). 2: Node entry file.'
+  while true; do
+    read -r -p 'Start method [1]: ' kind || return
+    kind=${kind:-1}; [[ "$kind" == 1 || "$kind" == 2 ]] && break
+  done
+  if [[ "$kind" == 1 ]]; then
+    [[ -f "$project/package.json" ]] || { warn 'No package.json in that folder.'; return 1; }
+    jq -r '(.scripts // {}) | keys[] | "    " + .' "$project/package.json" || return 1
+    while true; do
+      read -r -p 'npm script [start]: ' npm_script || return
+      npm_script=${npm_script:-start}
+      [[ "$npm_script" != -* ]] && jq -e --arg script "$npm_script" '.scripts[$script] | type == "string"' "$project/package.json" >/dev/null && break
+      warn 'Choose a script listed in package.json.'
+    done
+    script=$(command -v npm) || return 1
+  else
+    while true; do
+      read -r -p 'Node entry file, relative to app folder [server.js]: ' entry || return
+      entry=${entry:-server.js}
+      script="$project/$entry"
+      [[ -f "$script" ]] && break
+      warn 'That entry file does not exist. Build the app first if required.'
+    done
+  fi
+  if [[ -f "$project/package.json" ]]; then
+    confirm 'Install app dependencies before starting?' && install_deps=1
+    if jq -e '.scripts.build | type == "string"' "$project/package.json" >/dev/null; then
+      confirm 'Run the npm build script before starting?' && build_app=1
+    fi
+  fi
+  rule '3/5  PORT AND ENVIRONMENT'
+  info 'Your app must read PORT for this setting to take effect. Framework-specific settings may also be required.'
+  while true; do
+    read -r -p 'App port [3000]: ' port || return
+    port=${port:-3000}; valid_port "$port" && break
+    warn 'Use a port from 1 to 65535.'
+  done
+  read -r -p 'NODE_ENV [production]: ' environment || return
+  environment=${environment:-production}
+  info 'Add environment variables such as DATABASE_URL. Values are hidden. Press Enter on a name to finish.'
+  info 'Values are saved in a private PM2 config file and PM2 state. Existing .env files are left to your app to load.'
+  while true; do
+    read -r -p 'Environment variable name: ' key || return
+    [[ -n "$key" ]] || break
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$key" != PORT && "$key" != NODE_ENV ]] || { warn 'Use a valid variable name other than PORT or NODE_ENV.'; continue; }
+    read_hidden_paste_input "Value for $key:"
+    value=$HIDDEN_PASTE_VALUE; HIDDEN_PASTE_VALUE=''
+    printf '%s\0%s\0' "$key" "$value" >> "$stage/environment"
+    value=''
+  done
+  rule '4/5  PROCESS SETTINGS'
+  info 'One process is the safest default. Memory restart is a recovery threshold, not a hard RAM limit.'
+  if [[ "$kind" == 2 ]]; then
+    info 'Multiple instances use Node cluster mode. Use only for apps that support shared ports and keep session state outside the process.'
+    while true; do
+      read -r -p 'Instances [1]: ' instances || return
+      instances=${instances:-1}
+      [[ "$instances" =~ ^[1-9][0-9]?$ ]] && break
+      warn 'Enter a number from 1 to 99.'
+    done
+  else info 'npm scripts use a single process; cluster mode requires a direct Node entry file.'; fi
+  while true; do
+    read -r -p 'Restart above memory usage [512M]: ' memory || return
+    memory=${memory:-512M}
+    [[ "$memory" =~ ^[1-9][0-9]*[MG]$ ]] && break
+    warn 'Use a value such as 256M, 512M, or 1G.'
+  done
+  config="${XDG_STATE_HOME:-$HOME/.local/state}/neem/pm2/$name.ecosystem.json"
+  [[ ! -e "$config" ]] || { warn "Saved configuration already exists: $config. Choose another app name."; return 1; }
+  write_pm2_app_config "$stage/environment" "$name" "$project" "$script" "$npm_script" "$instances" "$memory" "$port" "$environment" > "$stage/app.json" || return 1
+  rule '5/5  REVIEW AND START'
+  printf '  App: %s\n  Folder: %s\n  Entry: %s %s\n  Port: %s\n  NODE_ENV: %s\n  Instances: %s\n  Memory restart: %s per process\n' "$name" "$project" "$script" "$npm_script" "$port" "$environment" "$instances" "$memory"
+  printf '  Install dependencies: %s | Build: %s\n' "$install_deps" "$build_app"
+  info 'Automatic crash recovery enabled; file watching disabled. Environment values are hidden.'
+  confirm 'Save this configuration and start the app?' || { info 'App setup cancelled.'; return 0; }
+  cd -- "$project" || return 1
+  if ((install_deps)); then
+    if [[ -f package-lock.json ]]; then package_step 'Installing app dependencies' run npm ci || return 1
+    else package_step 'Installing app dependencies' run npm install || return 1; fi
+  fi
+  if ((build_app)); then
+    package_step 'Building app' run node -e '
+      const fs=require("fs"),cp=require("child_process");
+      const app=JSON.parse(fs.readFileSync(process.argv[1],"utf8")).apps[0];
+      const r=cp.spawnSync("npm",["run","build"],{cwd:app.cwd,env:{...process.env,...app.env},stdio:"inherit"});
+      if(r.error)console.error(r.error.message);process.exit(r.status===null?1:r.status);
+    ' "$stage/app.json" || return 1
+  fi
+  destination=$(dirname -- "$config")
+  mkdir -p -- "$destination" || return 1
+  (set -o noclobber; cat "$stage/app.json" > "$config") || return 1
+  package_step 'Starting app' run pm2 start "$config" || return 1
+  ok "App submitted to PM2. Configuration: $config"
+  show_pm2_apps
+  printf '  View logs: pm2 logs %s\n  Monitor CPU/memory: pm2 monit\n' "$name"
+  info 'An online PM2 process does not by itself confirm the website is healthy. Check the app before connecting a domain.'
+  if confirm 'Configure restart after server reboot now?'; then pm2_startup; fi
+)
+
 pm2_startup() {
   local processes count
   need_command pm2
@@ -228,8 +377,7 @@ pm2_startup() {
   }
   if ((count == 0)); then
     info 'PM2 is not managing any apps yet. There is nothing to restore at boot.'
-    info 'Start your app with PM2, then choose Configure PM2 startup again.'
-    printf '\n  Example, from an app folder with an npm start script:\n    pm2 start npm --name my-app -- start\n\n'
+    if confirm 'Open the guided app setup now?'; then pm2_app_guide; fi
     return
   fi
   show_pm2_apps

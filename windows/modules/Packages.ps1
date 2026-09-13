@@ -5,13 +5,13 @@
 }
 
 function Invoke-PackageStep {
-    param([Parameter(Mandatory)][scriptblock]$Action, [Parameter(Mandatory)][string]$Display)
+    param([Parameter(Mandatory)][scriptblock]$Action, [Parameter(Mandatory)][string]$Display, [switch]$QuietProgress)
     if ($DryRun) { Invoke-Step -Action $Action -Display $Display; return }
     $log = Join-Path ([IO.Path]::GetTempPath()) ('neem-step-' + [guid]::NewGuid().ToString('N') + '.log')
     $label = if ($Display -match 'uninstall|remove') { 'Removing packages' }
         elseif ($Display -match 'install') { 'Installing packages' }
         else { 'Working' }
-    Write-Theme -Text "    $label..." -Role Muted
+    if (-not $QuietProgress) { Write-Theme -Text "    $label..." -Role Muted }
     try {
         $global:LASTEXITCODE = 0
         & $Action *> $log

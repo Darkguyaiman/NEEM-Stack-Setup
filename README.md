@@ -479,6 +479,24 @@ MIT
 
 ## Production release selection
 
+### Guided PM2 app setup (Linux/macOS)
+
+Choose **Start an app with PM2** to select a project folder and either an npm
+script or a Node entry file. The wizard offers dependency installation and an
+npm build, then asks for the app port, NODE_ENV, hidden environment values,
+memory restart threshold, and (for direct Node apps) cluster instance count.
+It shows a review before starting anything. New environment values also apply
+to the optional build; existing `.env` files are loaded only if the app supports
+them. The app must respect PORT; NEEM cannot override a hard-coded listener.
+
+Configs are saved with owner-only permissions under
+`~/.local/state/neem/pm2/` (or `$XDG_STATE_HOME/neem/pm2/`). They contain the
+environment values; PM2 also retains environment values in its process state.
+Existing PM2 app names/config files are not overwritten. npm scripts use one
+process; cluster mode is for compatible direct Node apps. The memory threshold
+triggers restarts rather than enforcing a hard limit. The final screen shows
+status and log/monitor commands and offers reboot startup registration.
+
 On Linux, Nginx setup creates `/var/www/html` and migrates the packaged
 `/usr/share/nginx/html` default root there. Existing files in `/var/www/html`
 and custom website roots are preserved. Changed configs receive timestamped
