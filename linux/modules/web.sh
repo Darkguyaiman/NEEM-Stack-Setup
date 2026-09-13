@@ -78,25 +78,40 @@ show_pm2_apps() {
     });'
 }
 
-dns_check() {
-  local domain=$1 resolved="" public=""
+dns_addresses() {
+  local domain=$1
   if command -v dig >/dev/null 2>&1; then
-    resolved="$(dig +short A "$domain" | head -n1 || true)"
+    { dig +time=3 +tries=1 +short A "$domain"; dig +time=3 +tries=1 +short AAAA "$domain"; } |
+      awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || /^[0-9a-fA-F]*:[0-9a-fA-F:]+$/'
   elif command -v getent >/dev/null 2>&1; then
-    resolved="$(getent ahostsv4 "$domain" 2>/dev/null | awk 'NR==1{print $1}' || true)"
-  elif command -v nslookup >/dev/null 2>&1; then
-    resolved="$(nslookup "$domain" 2>/dev/null | awk '/^Address: /{print $2}' | tail -n1 || true)"
-  fi
-  if command -v curl >/dev/null 2>&1; then
-    public="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-  fi
-  [[ -n "$resolved" ]] && info "$domain resolves to $resolved." || warn "$domain does not currently return an IPv4 address."
-  if [[ -n "$public" && -n "$resolved" && "$public" != "$resolved" ]]; then
-    warn "This machine's public IPv4 is $public, but DNS resolves to $resolved."
-    warn "SSL validation will fail unless a proxy or load balancer correctly forwards ports 80 and 443."
+    getent ahosts "$domain" | awk '{print $1}' | sort -u
+  else
+    warn 'No DNS lookup tool is available. Install dnsutils or bind-utils.'
     return 1
   fi
-  return 0
+}
+
+dns_check() {
+  local domain=$1 resolved public=''
+  if ((DRY_RUN)); then info "Would check A/AAAA records for $domain."; return; fi
+  resolved=$(dns_addresses "$domain") || { warn "Could not resolve $domain. Check its DNS records and try again."; return 1; }
+  [[ -n "$resolved" ]] || { warn "No A or AAAA address found for $domain. Add its DNS record before requesting HTTPS."; return 1; }
+  info "DNS found for $domain."
+  if command -v curl >/dev/null 2>&1; then public=$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true); fi
+  if [[ -n "$public" ]] && ! printf '%s\n' "$resolved" | grep -Fxq "$public"; then
+    info 'DNS points elsewhere. This can be normal with Cloudflare or another proxy; it does not by itself mean SSL will fail.'
+    info 'HTTP validation on port 80 must reach this Nginx server, including through any proxy.'
+  fi
+}
+
+check_www_alias() {
+  local domain=$1
+  [[ "$include_www" == yes ]] || return 0
+  if ! dns_check "www.$domain"; then
+    info "www.$domain is a separate hostname and is optional."
+    if confirm "Continue with $domain only?"; then include_www=no
+    else info "Add DNS for www.$domain, then retry."; return 1; fi
+  fi
 }
 
 write_nginx_config() {
@@ -134,16 +149,16 @@ server {
 }
 EOF
 
-  root_run mkdir -p "$NGINX_AVAILABLE" /var/www/letsencrypt
-  [[ -n "$NGINX_ENABLED" ]] && root_run mkdir -p "$NGINX_ENABLED"
+  root_run mkdir -p "$NGINX_AVAILABLE" /var/www/letsencrypt || return 1
+  if [[ -n "$NGINX_ENABLED" ]]; then root_run mkdir -p "$NGINX_ENABLED" || return 1; fi
   if [[ -f "$target" ]]; then
     backup="$target.backup.$(date +%Y%m%d%H%M%S)"
-    root_run cp "$target" "$backup"
+    root_run cp "$target" "$backup" || return 1
     info "Backed up the existing config."
   fi
-  root_run install -m 0644 "$temp" "$target"
+  root_run install -m 0644 "$temp" "$target" || return 1
   rm -f "$temp"
-  [[ -n "$link" ]] && root_run ln -sfn "$target" "$link"
+  if [[ -n "$link" ]]; then root_run ln -sfn "$target" "$link" || return 1; fi
 
   if ! root_run nginx -t; then
     if [[ -n "$backup" ]]; then
@@ -159,11 +174,11 @@ EOF
     # Public HTTP/HTTPS ports are privileged on macOS, so the domain workflow
     # replaces the user-level Homebrew service with a root-owned Nginx process.
     run brew services stop nginx
-    if pgrep -x nginx >/dev/null 2>&1; then root_run nginx -s reload
-    else root_run nginx
+    if pgrep -x nginx >/dev/null 2>&1; then root_run nginx -s reload || return 1
+    else root_run nginx || return 1
     fi
-  elif command -v systemctl >/dev/null 2>&1; then root_run systemctl reload nginx
-  else root_run nginx -s reload
+  elif command -v systemctl >/dev/null 2>&1; then root_run systemctl reload nginx || return 1
+  else root_run nginx -s reload || return 1
   fi
   ok "Nginx now proxies http://$domain to http://127.0.0.1:$port."
 }
@@ -175,15 +190,20 @@ enable_ssl() {
   if [[ -z "$include_www" ]]; then
     if confirm "Include www.$domain?"; then include_www="yes"; else include_www="no"; fi
   fi
+  rule 'HTTPS | CHECK HOSTNAMES'
+  dns_check "$domain" || return 1
+  check_www_alias "$domain" || return 1
   read -r -p "Email for expiry and security notices: " email
   [[ "$email" == *"@"* ]] || die "Please enter a valid email address."
-  dns_check "$domain" || confirm "Continue with SSL anyway?" || return
-  [[ "$include_www" == "yes" ]] && dns_check "www.$domain" || true
   install_certbot
   domains=(-d "$domain")
   [[ "$include_www" == "yes" ]] && domains+=(-d "www.$domain")
   info "Requesting a Let's Encrypt certificate and enabling HTTPS..."
-  root_run certbot --nginx "${domains[@]}" --email "$email" --agree-tos --no-eff-email --redirect
+  if ! package_step 'Enabling HTTPS' root_run certbot --nginx "${domains[@]}" --email "$email" --agree-tos --no-eff-email --redirect --non-interactive; then
+    warn 'HTTPS could not be enabled. Check the hostname DNS and inbound port 80, including any proxy rules.'
+    info 'Full Certbot details: /var/log/letsencrypt/letsencrypt.log. You can retry from Enable HTTPS.'
+    return 1
+  fi
   ok "HTTPS is enabled. Certbot also installed automatic renewal where supported."
 }
 
@@ -199,13 +219,15 @@ configure_domain() {
   read -r -p "Domain name (for example app.example.com): " domain
   valid_domain "$domain" || die "Invalid domain name: $domain"
   confirm "Also serve www.$domain?" && include_www="yes"
+  check_www_alias "$domain" || return 1
 
   if command -v curl >/dev/null 2>&1 && ! curl -fsS --max-time 3 "http://127.0.0.1:$port/" >/dev/null 2>&1; then
     warn "Nothing answered over HTTP on 127.0.0.1:$port."
     confirm "Write the Nginx configuration anyway?" || return
   fi
   dns_check "$domain" || true
-  write_nginx_config "$domain" "$port" "$include_www"
+  package_step 'Connecting domain' write_nginx_config "$domain" "$port" "$include_www" || return 1
+  ok "http://$domain routes to your app on port $port."
   if confirm "Apply a free Let's Encrypt SSL certificate now?"; then
     enable_ssl "$domain" "$include_www"
   else

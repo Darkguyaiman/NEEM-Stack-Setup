@@ -61,8 +61,8 @@ main_menu() {
       complete) install_all; pause ;;
       app) pm2_app_guide; pause ;;
       startup) pm2_startup; pause ;;
-      domain) configure_domain; pause ;;
-      ssl) enable_ssl; pause ;;
+      domain) configure_domain || true; pause ;;
+      ssl) enable_ssl || true; pause ;;
       tunnel) cloudflare_tunnel_guide; pause ;;
       backup) mysql_backup; pause ;;
       dbuser) mysql_user_guide ;;

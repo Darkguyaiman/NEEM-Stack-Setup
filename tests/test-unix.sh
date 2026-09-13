@@ -427,4 +427,23 @@ pass 'PM2 wizard generates valid process settings and preserves hidden values'
 )
 pass 'PM2 wizard starts only after confirmation and cancellation leaves no config'
 
+(
+  DRY_RUN=0
+  dns_addresses() { [[ "$1" == example.com ]] && printf '2001:db8::1\n'; }
+  curl() { printf '192.0.2.1\n'; }
+  assert_true 'proxied or IPv6-only DNS does not falsely block HTTPS' dns_check example.com
+  include_www=yes
+  confirm() { return 0; }
+  check_www_alias example.com >/dev/null 2>&1
+  assert_equal no "$include_www" 'missing www alias can be omitted before requesting a certificate'
+  install_certbot() { :; }
+  package_step() { printf '%s\n' "$*"; }
+  result=$(enable_ssl example.com yes <<< 'admin@example.com' 2>/dev/null)
+  assert_contains "$result" '-d example.com' 'certificate request includes the resolving hostname'
+  [[ "$result" != *'-d www.example.com'* ]] || fail 'certificate request retained a missing alias'
+  package_step() { return 1; }
+  if enable_ssl example.com no <<< 'admin@example.com' >/dev/null 2>&1; then fail 'Certbot failure reported success'; fi
+)
+pass 'HTTPS validates every hostname and handles certificate failure'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"

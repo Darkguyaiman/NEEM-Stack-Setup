@@ -4,7 +4,7 @@ package_step() {
   shift
   if ((DRY_RUN)); then run "$@"; return; fi
   # Keep privilege prompts on the terminal before capturing routine output.
-  if [[ ( "$1" == root_run || "$1" == configure_nginx_webroot ) && ${EUID:-$(id -u)} -ne 0 ]]; then
+  if [[ ( "$1" == root_run || "$1" == configure_nginx_webroot || "$1" == write_nginx_config ) && ${EUID:-$(id -u)} -ne 0 ]]; then
     sudo -v || return 1
   fi
   log=$(mktemp "${TMPDIR:-/tmp}/neem-step.XXXXXX") || return 1

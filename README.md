@@ -479,6 +479,12 @@ MIT
 
 ## Production release selection
 
+Domain/HTTPS setup checks A and AAAA addresses before requesting a certificate.
+A missing optional `www` alias can be omitted with confirmation. Different
+origin and DNS addresses may indicate a proxy; they are not treated as proof of
+SSL failure. HTTP validation still needs port 80 to reach Nginx. Certificate
+failures show diagnostics and return to the menu for retrying.
+
 ### Guided PM2 app setup (Linux/macOS)
 
 Choose **Start an app with PM2** to select a project folder and either an npm
