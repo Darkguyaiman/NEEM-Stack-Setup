@@ -493,4 +493,18 @@ pass 'backup failures do not exit the interactive menu'
 )
 pass 'password changes validate early, preserve account host, and respect cancellation'
 
+(
+  DRY_RUN=0
+  SSH_CONNECTION='192.0.2.5 50000 100.64.0.10 22'
+  curl() { fail 'SSH address should not need a public IP lookup'; }
+  assert_equal '100.64.0.10' "$(detect_backup_ssh_host)" 'backup detects the server side of the SSH connection'
+  SSH_CONNECTION=''
+  curl() { printf '203.0.113.10'; }
+  assert_equal '203.0.113.10' "$(detect_backup_ssh_host)" 'backup falls back to a public IP lookup'
+  curl() { return 1; }
+  hostname() { printf 'my-server'; }
+  assert_equal 'my-server' "$(detect_backup_ssh_host)" 'failed IP lookup falls back to hostname'
+)
+pass 'backup download address is detected automatically with fallbacks'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"

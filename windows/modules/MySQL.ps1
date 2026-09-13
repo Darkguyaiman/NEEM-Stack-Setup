@@ -178,15 +178,20 @@ function Backup-MySQLDatabase {
     Write-Theme -Text '  Tell us how this server is reached over SSH, then run the matching command' -Role Muted
     Write-Theme -Text '  on the computer that should receive the file.' -Role Muted
     Write-Host ''
-    $sshHost = $env:COMPUTERNAME
+    $sshHost = Get-BackupSshHost
+    Write-Info "Detected server address: $sshHost. Press Enter to use it, or enter a different IP/MagicDNS name."
     $sshUser = $env:USERNAME
+    Write-Info 'Use the server IP address OR a hostname your receiving computer can reach.'
+    Write-Info 'Examples: 203.0.113.10, a Tailscale IP, or a DNS/MagicDNS name.'
+    Write-Info 'For a Tailscale address or MagicDNS name, the receiving computer must have access to that tailnet.'
     if (-not $DryRun) {
-        $answer = Read-Host "SSH address clients use for this server [$sshHost]"
+        $answer = Read-Host "Server IP or hostname (including MagicDNS) [$sshHost]"
         if ($answer) { $sshHost = $answer }
         $answer = Read-Host "SSH user [$sshUser]"
         if ($answer) { $sshUser = $answer }
     }
     $remotePath = $finalFile.Replace('\', '/')
+    if ($sshHost.Contains(':') -and -not $sshHost.StartsWith('[')) { $sshHost = "[$sshHost]" }
     $source = "${sshUser}@${sshHost}:$remotePath"
     Write-Host ''
     Write-Theme -Text '  Windows PowerShell:' -Role Primary
@@ -274,6 +279,22 @@ function Show-MySQLUserManager {
         }
         if (-not $DryRun -and $pauseAfterAction) { [void](Read-Host 'Press Enter to continue') }
     }
+}
+
+function Get-BackupSshHost {
+    if ($env:SSH_CONNECTION) {
+        $parts = $env:SSH_CONNECTION -split '\s+'
+        $parsed = $null
+        if ($parts.Count -eq 4 -and [Net.IPAddress]::TryParse($parts[2], [ref]$parsed)) { return $parts[2] }
+    }
+    if (-not $DryRun) {
+        try {
+            $address = (Invoke-WebRequest -UseBasicParsing -Uri 'https://api.ipify.org' -TimeoutSec 3 -ErrorAction Stop).Content.Trim()
+            $parsed = $null
+            if ([Net.IPAddress]::TryParse($address, [ref]$parsed)) { return $address }
+        } catch { }
+    }
+    return $env:COMPUTERNAME
 }
 
 function Set-MySQLUserPassword {

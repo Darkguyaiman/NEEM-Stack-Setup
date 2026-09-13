@@ -78,6 +78,21 @@ normalize_backup_directory() {
   printf '%s\n' "$path"
 }
 
+detect_backup_ssh_host() {
+  local client client_port server server_port address
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    read -r client client_port server server_port <<< "$SSH_CONNECTION"
+    if [[ "$server" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || "$server" =~ ^[0-9a-fA-F:]+:[0-9a-fA-F:]+$ ]]; then
+      printf '%s\n' "$server"; return
+    fi
+  fi
+  if ((!DRY_RUN)) && command -v curl >/dev/null 2>&1; then
+    address=$(curl -4fsS --max-time 3 https://api.ipify.org 2>/dev/null || true)
+    if [[ "$address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then printf '%s\n' "$address"; return; fi
+  fi
+  hostname -f 2>/dev/null || hostname
+}
+
 mysql_backup() {
   local mysql_cmd dump_cmd dump_help host port user database choice include_schema answer
   local backup_dir timestamp safe_database partial_file final_file remote_host remote_user remote_path database_output argument
@@ -208,14 +223,19 @@ mysql_backup() {
   printf '%s  Tell us how this server is reached over SSH, then run the matching command%s\n' "$MUTED" "$RESET"
   printf '%s  on the computer that should receive the file.%s\n\n' "$MUTED" "$RESET"
   remote_user=$(id -un)
-  remote_host=$(hostname -f 2>/dev/null || hostname)
+  remote_host=$(detect_backup_ssh_host)
+  info "Detected server address: $remote_host. Press Enter to use it, or enter a different IP/MagicDNS name."
+  info 'Use the server IP address OR a hostname your receiving computer can reach.'
+  info 'Examples: 203.0.113.10, 100.64.0.10 (Tailscale IP), or my-server (DNS/MagicDNS name).'
+  info 'For a Tailscale address or MagicDNS name, the receiving computer must have access to that tailnet.'
   if ((!DRY_RUN)); then
-    read -r -p "SSH address clients use for this server [$remote_host]: " answer
+    read -r -p "Server IP or hostname (including MagicDNS) [$remote_host]: " answer
     remote_host=${answer:-$remote_host}
     read -r -p "SSH user [$remote_user]: " answer
     remote_user=${answer:-$remote_user}
   fi
   remote_path=$final_file
+  if [[ "$remote_host" == *:* && "$remote_host" != \[*\] ]]; then remote_host="[$remote_host]"; fi
   printf '\n'
   printf '%s  Windows PowerShell:%s\n  scp %q "$HOME\\Downloads\\"\n' "$CREAM" "$RESET" "$remote_user@$remote_host:$remote_path"
   printf '%s  macOS:%s\n  scp %q ~/Downloads/\n' "$CREAM" "$RESET" "$remote_user@$remote_host:$remote_path"
