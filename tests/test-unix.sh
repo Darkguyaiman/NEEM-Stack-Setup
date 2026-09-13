@@ -446,4 +446,51 @@ pass 'PM2 wizard starts only after confirmation and cancellation leaves no confi
 )
 pass 'HTTPS validates every hostname and handles certificate failure'
 
+(
+  menu_visits=0
+  paused=0
+  select_main_action() {
+    menu_visits=$((menu_visits + 1))
+    if ((menu_visits == 1)); then MAIN_ACTION=backup; else MAIN_ACTION=exit; fi
+  }
+  mysql_backup() { return 1; }
+  pause() { paused=1; }
+  main_menu >/dev/null
+  assert_equal 2 "$menu_visits" 'failed backup returns to the main menu'
+  assert_equal 1 "$paused" 'backup error remains visible until acknowledged'
+)
+pass 'backup failures do not exit the interactive menu'
+
+(
+  capture=$(mktemp)
+  trap 'rm -f -- "$capture"' EXIT
+  DRY_RUN=0
+  command() { if [[ "$*" == '-v mysql' ]]; then printf 'password_test_mysql\n'; else builtin command "$@"; fi; }
+  ensure_release_tools() { :; }
+  mysql_admin_connection() { connection_args=(); mysql_prefix=(); }
+  password_test_mysql() {
+    if [[ "$*" == *SELECT* ]]; then printf '["theuser","localhost"]\n["theuser","%%"]\n'
+    else cat > "$capture"; fi
+  }
+  select_mysql_database() { SELECTED_DATABASE='"theuser" @ "%"'; }
+  password_reads=0
+  read_hidden_paste_input() {
+    password_reads=$((password_reads + 1))
+    if ((password_reads == 1)); then HIDDEN_PASTE_VALUE=short
+    else HIDDEN_PASTE_VALUE="long-password'with\\quote"; fi
+    if ((password_reads == 2)); then [[ "$1" != 'Confirm password:' ]] || fail 'short password reached confirmation'; fi
+  }
+  confirm() { return 1; }
+  mysql_change_password <<< $'\n\n\n' >/dev/null 2>&1
+  [[ ! -s "$capture" ]] || fail 'cancelled password change executed SQL'
+  confirm() { return 0; }
+  result=$(mysql_change_password <<< $'\n\n\n' 2>&1)
+  sql=$(cat "$capture")
+  assert_contains "$sql" "ALTER USER 'theuser'@'%'" 'password update targets the selected host variant'
+  assert_contains "$sql" "sql_mode='NO_BACKSLASH_ESCAPES'" 'password escaping is independent of server SQL mode'
+  assert_contains "$sql" "long-password''with\\quote" 'quotes are escaped and backslashes preserved in new passwords'
+  [[ "$result" != *long-password* ]] || fail 'password appeared in displayed output'
+)
+pass 'password changes validate early, preserve account host, and respect cancellation'
+
 printf '\nBash suite passed (%d assertions).\n' "$TEST_COUNT"

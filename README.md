@@ -147,6 +147,13 @@ features may still require the same or a newer server version.
 
 ## MySQL database users
 
+Choose **Manage MySQL users → Change user password** to select an existing
+username/host account and set a new password. Passwords are hidden, require at
+least 12 characters before confirmation, and are sent through stdin rather than
+command arguments. You review the selected account before applying the change.
+Socket/external-authentication accounts are excluded; their authentication method
+is not converted. Update any apps that use the account with the new password.
+
 On Linux/macOS, user creation and account listing automatically try socket
 authentication for local `root` on the default port. If it succeeds, no MySQL
 administrator password is requested. Existing sudo authorization is supported;

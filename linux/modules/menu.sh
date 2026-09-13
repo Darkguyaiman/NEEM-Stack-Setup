@@ -64,7 +64,7 @@ main_menu() {
       domain) configure_domain || true; pause ;;
       ssl) enable_ssl || true; pause ;;
       tunnel) cloudflare_tunnel_guide; pause ;;
-      backup) mysql_backup; pause ;;
+      backup) mysql_backup || true; pause ;;
       dbuser) mysql_user_guide ;;
       health) health_check; pause ;;
       creator) show_creator ;;

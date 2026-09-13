@@ -203,6 +203,7 @@ function Select-MySQLUserAction {
         [pscustomobject]@{ Id='database'; Label='Create user for one database'; Hint='Grant full access to one selected database.' }
         [pscustomobject]@{ Id='all'; Label='Create user for all databases'; Hint='Grant full access across the entire MySQL server.' }
         [pscustomobject]@{ Id='list'; Label='View MySQL users'; Hint='List each MySQL account and its allowed connection host.' }
+        [pscustomobject]@{ Id='password'; Label='Change user password'; Hint='Choose an existing account and set a new password.' }
         [pscustomobject]@{ Id='return'; Label='Return to main menu'; Hint='Leave MySQL user management without changes.' }
     )
     $cursor = 0
@@ -268,9 +269,71 @@ function Show-MySQLUserManager {
             'database' { New-MySQLDatabaseUser -Scope Database }
             'all' { New-MySQLDatabaseUser -Scope All }
             'list' { Show-MySQLUsers }
+            'password' { try { Set-MySQLUserPassword } catch { Write-Warn $_.Exception.Message } }
             'return' { return }
         }
         if (-not $DryRun -and $pauseAfterAction) { [void](Read-Host 'Press Enter to continue') }
+    }
+}
+
+function Set-MySQLUserPassword {
+    Write-Rule 'CHANGE MYSQL USER PASSWORD'
+    if ($DryRun) { Write-Info 'Would select an account and confirm a hidden password change.'; return }
+    $mysql = (Get-Command mysql -ErrorAction SilentlyContinue).Source
+    if (-not $mysql) { $mysql = (Get-Command mariadb -ErrorAction SilentlyContinue).Source }
+    if (-not $mysql) { throw 'Install the MySQL client first.' }
+    $hostName = Read-Host 'MySQL host [127.0.0.1]'
+    if (-not $hostName) { $hostName = '127.0.0.1' }
+    $portText = Read-Host 'MySQL port [3306]'
+    if (-not $portText) { $portText = '3306' }
+    $port = 0
+    if (-not [int]::TryParse($portText, [ref]$port) -or $port -lt 1 -or $port -gt 65535) { throw 'Port must be between 1 and 65535.' }
+    $adminUser = Read-Host 'MySQL administrator [root]'
+    if (-not $adminUser) { $adminUser = 'root' }
+    $connectionArgs = @("--host=$hostName", "--port=$port", "--user=$adminUser", '--password', '--protocol=TCP')
+    Write-Info 'MySQL will ask for the administrator password.'
+    $rows = @(& $mysql @connectionArgs --batch --raw --skip-column-names "--execute=SELECT JSON_ARRAY(User,Host) FROM mysql.user WHERE plugin IN ('caching_sha2_password','sha256_password','mysql_native_password') AND User <> '' ORDER BY User,Host")
+    if ($LASTEXITCODE -ne 0) { throw 'Could not list accounts. Check administrator permissions.' }
+    $accounts = @($rows | Where-Object { $_ } | ForEach-Object {
+        $values = $_ | ConvertFrom-Json
+        [pscustomobject]@{ User=[string]$values[0]; HostName=[string]$values[1]; Label=($_ | ConvertFrom-Json | ConvertTo-Json -Compress) }
+    })
+    if (-not $accounts.Count) { Write-Info 'No password-authenticated accounts found. Socket accounts do not use passwords.'; return }
+    $selected = Select-MySQLDatabase -Databases @($accounts.Label) -Title 'CHOOSE ACCOUNT | [username, host]'
+    if (-not $selected) { Write-Info 'Password change cancelled.'; return }
+    $account = $accounts | Where-Object { $_.Label -eq $selected } | Select-Object -First 1
+    $plainPassword = $null; $plainConfirmation = $null; $sql = $null
+    $previousOutputEncoding = $OutputEncoding
+    try {
+        while ($true) {
+            $secure = Read-HiddenPasteInput 'New password (minimum 12 characters):'
+            if ($secure.Length -lt 12) { $secure.Dispose(); Write-Warn 'Use at least 12 characters.'; continue }
+            $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+            try { $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
+            finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer); $secure.Dispose() }
+            $secure = Read-HiddenPasteInput 'Confirm password:'
+            $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+            try { $plainConfirmation = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
+            finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer); $secure.Dispose() }
+            if ($plainPassword -ceq $plainConfirmation) { break }
+            $plainPassword = $null; $plainConfirmation = $null
+            Write-Warn 'Passwords do not match. Try again.'
+        }
+        $plainConfirmation = $null
+        Write-Info "Account: $selected. Applications using this account will need the new password."
+        if (-not (Confirm-Action 'Change this account password?')) { Write-Info 'Password change cancelled.'; return }
+        $escapedUser = $account.User.Replace("'", "''")
+        $escapedHost = $account.HostName.Replace("'", "''")
+        $escapedPassword = $plainPassword.Replace("'", "''")
+        $sql = "SET SESSION sql_mode='NO_BACKSLASH_ESCAPES'; ALTER USER '$escapedUser'@'$escapedHost' IDENTIFIED BY '$escapedPassword';"
+        Write-Info 'MySQL will ask for the administrator password again to apply this change.'
+        $OutputEncoding = [Text.UTF8Encoding]::new($false)
+        $sql | & $mysql @connectionArgs
+        if ($LASTEXITCODE -ne 0) { throw 'Password change failed. Check permissions and the server password policy.' }
+        Write-Ok "Password changed for $selected."
+    } finally {
+        $OutputEncoding = $previousOutputEncoding
+        $plainPassword = $null; $plainConfirmation = $null; $escapedPassword = $null; $sql = $null
     }
 }
 

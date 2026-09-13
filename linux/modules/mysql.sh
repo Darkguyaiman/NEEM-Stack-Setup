@@ -80,8 +80,8 @@ normalize_backup_directory() {
 
 mysql_backup() {
   local mysql_cmd dump_cmd dump_help host port user database choice include_schema answer
-  local backup_dir timestamp safe_database partial_file final_file remote_host remote_user remote_path
-  local -a databases connection_args dump_args
+  local backup_dir timestamp safe_database partial_file final_file remote_host remote_user remote_path database_output argument
+  local -a databases connection_args dump_args mysql_prefix
 
   mysql_cmd=$(command -v mysql || command -v mariadb || true)
   dump_cmd=$(command -v mysqldump || command -v mariadb-dump || true)
@@ -101,6 +101,8 @@ mysql_backup() {
   printf '%s  Press Enter to accept a value shown in brackets.%s\n\n' "$MUTED" "$RESET"
   if ((DRY_RUN)); then
     host="127.0.0.1"; port="3306"; user="mysql-user"; database="chosen_database"
+    connection_args=(--host="$host" --port="$port" --user="$user" --password --protocol=TCP)
+    mysql_prefix=()
     include_schema=1
     info "Dry run uses placeholders and does not connect to MySQL."
     rule "STEP 2 OF 6 | CHOOSE A DATABASE"
@@ -115,12 +117,15 @@ mysql_backup() {
     [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)) || { warn "Port must be between 1 and 65535."; return 1; }
     read -r -p "MySQL user [root]: " user
     user=${user:-root}
-    connection_args=(--host="$host" --port="$port" --user="$user" --password --protocol=TCP)
-    info "MySQL will ask for the password without displaying it."
+    mysql_admin_connection "$mysql_cmd" "$host" "$port" "$user"
+    if ! database_output=$("${mysql_prefix[@]}" "$mysql_cmd" "${connection_args[@]}" --batch --skip-column-names --execute='SHOW DATABASES'); then
+      warn 'Could not connect to MySQL or list databases. Check your login and retry Back up a MySQL database.'
+      return 1
+    fi
     databases=()
     while IFS= read -r answer; do
       case "$answer" in information_schema|performance_schema|mysql|sys|'') ;; *) databases+=("$answer") ;; esac
-    done < <("$mysql_cmd" "${connection_args[@]}" --batch --skip-column-names --execute='SHOW DATABASES')
+    done <<< "$database_output"
     ((${#databases[@]})) || { warn "No user databases were returned."; return 1; }
     if ! select_mysql_database "STEP 2 OF 6 | CHOOSE A DATABASE" "${databases[@]}"; then
       info "Backup cancelled. No file was created."
@@ -155,7 +160,11 @@ mysql_backup() {
   final_file="$backup_dir/$final_file"
   partial_file="${final_file}.partial"
 
-  dump_args=(--host="$host" --port="$port" --user="$user" --password --protocol=TCP
+  dump_args=()
+  for argument in "${connection_args[@]}"; do
+    [[ "$argument" == --connect-timeout=* ]] || dump_args+=("$argument")
+  done
+  dump_args+=(
     --default-character-set=utf8mb4 --single-transaction --quick --hex-blob
     --complete-insert --skip-lock-tables --skip-comments --tz-utc)
   dump_help=$("$dump_cmd" --help 2>/dev/null || true)
@@ -169,7 +178,9 @@ mysql_backup() {
   fi
 
   rule "STEP 5 OF 6 | CREATE AND VALIDATE DUMP"
-  printf '%s  For safety, MySQL asks for the password again before writing the dump.%s\n' "$MUTED" "$RESET"
+  if [[ " ${connection_args[*]} " == *' --password '* ]]; then
+    info 'MySQL will ask for the password again before writing the dump.'
+  fi
   printf '%s+%s %s <portable options> --result-file=%q %q\n' "$BLUE" "$RESET" "$(basename "$dump_cmd")" "$partial_file" "$database"
   if ((DRY_RUN)); then
     info "Would create: $final_file"
@@ -177,7 +188,8 @@ mysql_backup() {
     mkdir -p "$backup_dir"
     chmod 700 "$backup_dir" 2>/dev/null || true
     rm -f -- "$partial_file"
-    if ! "$dump_cmd" "${dump_args[@]}" --result-file="$partial_file"; then
+    (umask 077; : > "$partial_file") || return 1
+    if ! "${mysql_prefix[@]}" "$dump_cmd" "${dump_args[@]}" --result-file="$partial_file"; then
       rm -f -- "$partial_file"
       warn "Backup failed; the incomplete dump was removed."
       return 1
@@ -214,9 +226,9 @@ mysql_backup() {
 MYSQL_USER_ACTION=""
 select_mysql_user_action() {
   local cursor=0 key rest index first_render=1
-  local -a ids=(database all list return)
-  local -a labels=("Create user for one database" "Create user for all databases" "View MySQL users" "Return to main menu")
-  local -a hints=("Grant full access to one selected database." "Grant full access across the entire MySQL server." "List each MySQL account and its allowed connection host." "Leave MySQL user management without changes.")
+  local -a ids=(database all list password return)
+  local -a labels=("Create user for one database" "Create user for all databases" "View MySQL users" "Change user password" "Return to main menu")
+  local -a hints=("Grant full access to one selected database." "Grant full access across the entire MySQL server." "List each MySQL account and its allowed connection host." "Choose an existing account and set a new password." "Leave MySQL user management without changes.")
   MYSQL_USER_ACTION=""
   clear 2>/dev/null || true
   show_brand
@@ -302,10 +314,67 @@ mysql_user_guide() {
       database) mysql_create_user database || true; pause ;;
       all) mysql_create_user all || true; pause ;;
       list) mysql_list_users || true; pause ;;
+      password) mysql_change_password || true; pause ;;
       return) return ;;
     esac
   done
 }
+
+mysql_change_password() (
+  local mysql_cmd host port admin_user rows row label selected='' account_user account_host password confirmation sql
+  local -a connection_args mysql_prefix accounts=() labels=()
+  rule 'CHANGE MYSQL USER PASSWORD'
+  if ((DRY_RUN)); then
+    info 'Would connect, select a password-authenticated account, and confirm a hidden password change.'
+    return
+  fi
+  mysql_cmd=$(command -v mysql || command -v mariadb || true)
+  [[ -n "$mysql_cmd" ]] || { warn 'Install the MySQL client first.'; return 1; }
+  ensure_release_tools || return 1
+  read -r -p 'MySQL host [127.0.0.1]: ' host || return; host=${host:-127.0.0.1}
+  read -r -p 'MySQL port [3306]: ' port || return; port=${port:-3306}
+  valid_port "$port" || { warn 'Port must be between 1 and 65535.'; return 1; }
+  read -r -p 'MySQL administrator [root]: ' admin_user || return; admin_user=${admin_user:-root}
+  mysql_admin_connection "$mysql_cmd" "$host" "$port" "$admin_user"
+  rows=$("${mysql_prefix[@]}" "$mysql_cmd" "${connection_args[@]}" --batch --raw --skip-column-names \
+    --execute="SELECT JSON_ARRAY(User,Host) FROM mysql.user WHERE plugin IN ('caching_sha2_password','sha256_password','mysql_native_password') AND User <> '' ORDER BY User,Host") || {
+    warn 'Could not list accounts. Check administrator permissions.'; return 1;
+  }
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    label=$(printf '%s' "$row" | jq -er 'map(@json) | join(" @ ")') || return 1
+    accounts+=("$row"); labels+=("$label")
+  done <<< "$rows"
+  ((${#accounts[@]})) || { info 'No password-authenticated accounts found. Socket-authenticated accounts do not use passwords.'; return; }
+  select_mysql_database 'CHOOSE ACCOUNT | username @ host' "${labels[@]}" || { info 'Password change cancelled.'; return 0; }
+  for label in "${!labels[@]}"; do
+    [[ "${labels[label]}" == "$SELECTED_DATABASE" ]] && selected=${accounts[label]}
+  done
+  [[ -n "$selected" ]] || return 1
+  account_user=$(printf '%s' "$selected" | jq -r '.[0]') || return 1
+  account_host=$(printf '%s' "$selected" | jq -r '.[1]') || return 1
+  while true; do
+    read_hidden_paste_input 'New password (minimum 12 characters):'
+    password=$HIDDEN_PASTE_VALUE; HIDDEN_PASTE_VALUE=''
+    if ((${#password} < 12)); then password=''; warn 'Use at least 12 characters.'; continue; fi
+    read_hidden_paste_input 'Confirm password:'
+    confirmation=$HIDDEN_PASTE_VALUE; HIDDEN_PASTE_VALUE=''
+    [[ "$password" == "$confirmation" ]] && break
+    password=''; confirmation=''; warn 'Passwords do not match. Try again.'
+  done
+  confirmation=''
+  info "Account: $SELECTED_DATABASE"
+  info 'Applications using this account will need the new password.'
+  confirm 'Change this account password?' || { password=''; info 'Password change cancelled.'; return 0; }
+  # Fix SQL escaping independently of the server's existing SQL mode.
+  account_user=${account_user//\'/\'\'}; account_host=${account_host//\'/\'\'}; password=${password//\'/\'\'}
+  sql="SET SESSION sql_mode='NO_BACKSLASH_ESCAPES'; ALTER USER '$account_user'@'$account_host' IDENTIFIED BY '$password';"
+  if ! printf '%s\n' "$sql" | "${mysql_prefix[@]}" "$mysql_cmd" "${connection_args[@]}"; then
+    password=''; sql=''; warn 'Password change failed. Check account permissions and the server password policy.'; return 1
+  fi
+  password=''; sql=''
+  ok "Password changed for $SELECTED_DATABASE."
+)
 
 mysql_create_user() {
   local scope=${1:-database}

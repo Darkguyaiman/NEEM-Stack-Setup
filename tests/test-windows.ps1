@@ -112,4 +112,25 @@ Assert-True $true 'release selection dry run works without network access'
     Assert-Equal 'pm2,node' ($script:RemovalCalls -join ',') 'Windows removes PM2 before its Node runtime'
 }
 
+& {
+    $DryRun = $false
+    $script:PasswordSql = ''
+    function Get-Command { [pscustomobject]@{ Source='Invoke-PasswordTestMysql' } }
+    function Invoke-PasswordTestMysql {
+        $global:LASTEXITCODE = 0
+        if (($args -join ' ') -match 'SELECT JSON_ARRAY') { '["theuser","%"]' }
+        else { $script:PasswordSql = $input -join "`n" }
+    }
+    function Read-Host { '' }
+    function Read-HiddenPasteInput { ConvertTo-SecureString "long-password'with\quote" -AsPlainText -Force }
+    function Select-MySQLDatabase { param($Databases,$Title) $Databases[0] }
+    function Confirm-Action { $false }
+    Set-MySQLUserPassword
+    Assert-Equal '' $script:PasswordSql 'cancelled Windows password change executes no SQL'
+    function Confirm-Action { $true }
+    Set-MySQLUserPassword
+    Assert-True ($script:PasswordSql.Contains("ALTER USER 'theuser'@'%'")) 'Windows password change targets the selected account host'
+    Assert-True ($script:PasswordSql.Contains("long-password''with\quote")) 'Windows password change escapes quotes without corrupting backslashes'
+}
+
 Write-Host "`nWindows PowerShell suite passed ($script:TestCount assertions)." -ForegroundColor Green
